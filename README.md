@@ -10,8 +10,8 @@ Toolkit for fast parallelised time-domain diffuse optical tomography
     - Parallel solutions for multi-frequency FD diffusion approximation (DA)
     - TD and time-gated (TG) solutions from Fourier coefficient solutions of DA
 - Reconstruction
-    - Formation of multi-frequency FD absorpton Jacobian/sensitivity
-    - Formation of TD and TG absorpton Jacobians
+    - Calculation of multi-frequency FD absorpton Jacobian/sensitivity
+    - Calculation of TD and TG absorpton Jacobians
     - Weighted Levenburg-Marquardt reconstruction of absorption using TG/TD datatypes
 - Data and mesh display
 
@@ -61,3 +61,4 @@ The iso2mesh toolbox interacts with external meshing tools the licensing of some
 *Anh Phong Tran, Shijie Yan and Qianqian Fang, (2020) "[Improving model-based fNIRS analysis using mesh-based anatomical and light-transport models](https://doi.org/10.1117/1.NPh.7.1.015008)," Neurophotonics, 7(1), 015008
 
 *Qianqian Fang and David Boas, "[Tetrahedral mesh generation from volumetric binary and gray-scale images](https://iso2mesh.sourceforge.net/upload/ISBI2009_abstract_final_web.pdf)," Proceedings of IEEE International Symposium on Biomedical Imaging 2009, pp. 1142-1145, 2009
+
