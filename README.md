@@ -2,7 +2,7 @@
 ## Diffuse Optics by GPU Parallelisation
 Toolkit for fast parallelised time-domain diffuse optical tomography
 
-- Version 1.0.0
+- Version 1.1.0
 - Author: Ifechi Ejidike
 
 ## Features
@@ -11,8 +11,8 @@ Toolkit for fast parallelised time-domain diffuse optical tomography
     - Parallel solutions for multi-frequency FD diffusion approximation (DA)
     - TD and time-gated (TG) solutions from Fourier coefficient solutions of DA
 - Reconstruction
-    - Calculation of multi-frequency FD absorpton Jacobian/sensitivity
-    - Calculation of TD and TG absorpton Jacobians
+    - Calculation of multi-frequency FD Jacobians/sensitivities
+    - Calculation of TD and TG Jacobians
     - Weighted Levenburg-Marquardt reconstruction of absorption using TG/TD datatypes
 - Data and mesh display
 
@@ -43,12 +43,14 @@ Source code for mex routines can be found in `DOGPUP/cuda_lib/mex_sources`, thes
 
 ## Changelog
 
-N/A
+- v1.1.0
+    - IRF is now defined per channel rather than globally 
+    - Added reduced scattering Jacobian generation
+    - Added weighted scattering coefficient reconstruction
 
 ## To be added
 
-- Diffusion Jacobian generation
-- Scattering coefficient reconstruction
+- Remove reliance on MATLAB toolboxes
 
 ## Acknowledgement
 

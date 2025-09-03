@@ -126,7 +126,7 @@ classdef dMesh
             for i = 1:size(mesh.optode.s_positions,1)
                 Q(mesh.elem(mesh.optode.s_bary(i,1),:),:,i) = mesh.optode.s_bary(i,2:end);
             end
-            Q = Q.*mesh.optode.s_fpsf;
+            Q = repmat(Q,1,mesh.optode.Nf,1);
             % solve
             tdisp('\nsolving for fluence...',displayFlag)
             phi = fluGPU(mesh,Q);
@@ -168,6 +168,7 @@ classdef dMesh
                 temp = D*squeeze(phi(:,i,:));
                 data(:,i) = temp(idx);
             end
+            data = data.*mesh.optode.ch_firf;
         end
         
         % solves for adjoint fluence using BICGSTAB and FSAI preconditioning
@@ -193,7 +194,7 @@ classdef dMesh
             for i = 1:size(mesh.optode.d_positions,1)
                 Q(mesh.elem(mesh.optode.d_bary(i,1),:),:,i) = mesh.optode.d_bary(i,2:end);
             end
-            Q = Q.*mesh.optode.s_fpsf;
+            Q = repmat(Q,1,mesh.optode.Nf,1);
             % solve
             tdisp('\nsolving for adjoint fluence...',displayFlag)
             phiA = fluGPU(mesh,Q);
@@ -202,17 +203,18 @@ classdef dMesh
         end
 
         %% Inverse probelm methods
-        % generates complex FD absorption jacobian
-        function [J,data,phi,phiA] = J_complex(mesh,phi,phiA,displayFlag)
+        % generates complex FD jacobian
+        function [J,data,phi,phiA] = J_complex(mesh,phi,phiA,type,displayFlag)
             % Finds the Fourier series coefficient absorption Jacobian 
             % using the adjoint method
 
             % INPUT
             % mesh = fully initialised DOGPUP mesh
             % displayFlag = flag for text display (boolean)
+            % type = 'full' or empty, full calculates both absorption and kappa
             
             % OUTPUT
-            % J = absorption sensitivity for Fourier coefficients (NM x NF x NV)
+            % J = sensitivity for Fourier coefficients (NM x NF x NV or NM x NF x 2*NV)
             % data = Fourier coefficients of fluence at detectors (NM x NF)
             % phi = Fourier coefficients of fluence through mesh (NN x NF x NS)
             % phiA = Fourier coefficients of adjoint fluence through mesh (NN x NF x ND)
@@ -221,8 +223,12 @@ classdef dMesh
             % NV = number of voxels, NS = number of sources, 
             % ND = number of detectors, NM = number of measurements
 
-            if nargin < 4
+            if nargin < 5
                 displayFlag = 1;
+            end
+
+            if nargin < 4 || isempty(type)
+                type = 'mua';
             end
             
             if nargin < 3 || isempty(phiA)
@@ -238,12 +244,34 @@ classdef dMesh
             % interpolate fluences to grid
             phi_Grid = reshape(mesh.m2g*reshape(phi,size(phi,1),[]),[],size(phi,2), size(phi,3));
             phiA_Grid = reshape(mesh.m2g*reshape(phiA,size(phiA,1),[]),[],size(phiA,2), size(phiA,3));
-            % convolve and correctly reshape to grid
-            J = -phi_Grid(:,:,mesh.optode.link(:,1)).*phiA_Grid(:,:,mesh.optode.link(:,2)).*mesh.dxyz^3; % grid x freq x meas
-
-            J = permute(J,[3 2 1]); % meas x freq x [voxel_kappa voxel_mua]
-            J = J./mesh.optode.s_fpsf; % scale convolution
+            % correctly reshape to voxels
+            J = -phi_Grid(:,:,mesh.optode.link(:,1)).*phiA_Grid(:,:,mesh.optode.link(:,2)).*mesh.dxyz^3; % voxel_mua x freq x meas
+            J = permute(J,[3 2 1]); % meas x freq x voxel_mua
+            
             tdisp('done!\n',displayFlag)
+
+            if strcmp(type,'full')
+
+                tdisp('\ngenerating complex reduced scattering jacobian...',displayFlag)
+                % compute gradient
+                phi_Grid = reshape(phi_Grid,[mesh.gridSize 1 size(phi,2) size(phi,3)]);
+                phiA_Grid = reshape(phiA_Grid,[mesh.gridSize 1 size(phiA,2) size(phiA,3)]);
+                [y,x,z] = gradient(phi_Grid);
+                phi_grad = cat(4,x,y,z);
+                [y,x,z] = gradient(phiA_Grid);
+                phiA_grad = cat(4,x,y,z);
+                
+                % dot product of gradients for diffusion sensitivity
+                Jk = squeeze(sum((phi_grad(:,:,:,:,:,mesh.optode.link(:,1)).*phiA_grad(:,:,:,:,:,mesh.optode.link(:,2))),4).*mesh.dxyz^3);
+                
+                % correctly reshape to voxels and scale to scattering
+                Jk = 3.*reshape(Jk,[prod(size(Jk,[1 2 3])) size(Jk,4) size(Jk,5)]).*(mesh.m2g*(mesh.kappa.^2)); % voxel_kappa x freq x meas
+                Jk = permute(Jk,[3 2 1]); % meas x freq x voxel_kappa
+
+                J = cat(3,J,Jk); % meas x freq x [voxel_mua voxel_kappa]
+                tdisp('done!\n',displayFlag)
+            end
+            J = J.*mesh.optode.ch_firf; % convolve with channel IRF
         end
 
         % Form array of target spots

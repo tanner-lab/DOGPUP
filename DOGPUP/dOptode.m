@@ -7,14 +7,14 @@ classdef dOptode < matlab.mixin.Copyable
         s_dirs % source directions n x 3 where n is number of sources 
         s_positions % source positons mm n x 3
         s_bary % barycentric co-ords of source positions
-        s_avgPow % average power
-        s_tpsf % source tpsf
-        s_fpsf % fourier series coeffs of fpsf
 
         % detectors
         d_dirs % detector directions n x 3 where n is number of sources 
         d_positions % positions of detector (mm) n x 3
         d_bary % barycentric co-ords of source positions
+
+        ch_tirf % channel time domain irf
+        ch_firf % fourier series coeffs of channel irf
 
         % time domain stuff
         dt % time spacing (s)
@@ -31,7 +31,7 @@ classdef dOptode < matlab.mixin.Copyable
     methods
         %% Optode Setup
         % Construct an instance of this class
-        function optode = dOptode(s_pos,d_pos,link,avgPow,tpsf,tAxis,Nf)
+        function optode = dOptode(s_pos,d_pos,link,irf,tAxis,Nf)
             % Construct DOGPUP optode
 
             % INPUT
@@ -59,18 +59,14 @@ classdef dOptode < matlab.mixin.Copyable
             optode.fAxis = (0:Nf-1).*w0;
             optode.df = optode.fAxis(2) - optode.fAxis(1);
 
-            %   Detector setup
+            % Detector setup
             optode.d_positions = d_pos;
-            
-            %   Source setup
+            % Source setup
             optode.s_positions = s_pos;
-            % scale tpsf to average power
-            optode.s_avgPow = avgPow;
-            avgPowTemp = mean(tpsf);
-            scaleFact = avgPow/avgPowTemp;
-            optode.s_tpsf = tpsf.*scaleFact;
+            % IRFs
+            optode.ch_tirf = irf;
             % convert to fourier coeffs
-            optode.s_fpsf = td2fc(optode.s_tpsf,optode.fAxis,optode.tAxis,2);  
+            optode.ch_firf = td2fc(irf,optode.fAxis,optode.tAxis,2);  
         end
 
         % Snap optodes to mesh
@@ -98,7 +94,7 @@ classdef dOptode < matlab.mixin.Copyable
 
         %% Optode Update Methods        
         % Update source pulse parameters
-        function optode = update_tpsf(optode,avgPow,tpsf,tAxis,Nf)
+        function optode = update_irf(optode,irf,tAxis,Nf)
             % Function to update optode source tpsf
 
             % OUTPUT
@@ -112,11 +108,10 @@ classdef dOptode < matlab.mixin.Copyable
             optode.fAxis = (0:Nf-1).*w0;
             optode.df = optode.fAxis(2) - optode.fAxis(1);
 
-            optode.s_avgPow = avgPow;
-            avgPowTemp = mean(tpsf);
-            scaleFact = avgPow/avgPowTemp;
-            optode.s_tpsf = tpsf.*scaleFact;
-            optode.s_fpsf = td2fc(optode.s_tpsf,optode.fAxis,optode.tAxis,2);
+            % IRFs
+            optode.ch_tirf = irf;
+            % convert to fourier coeffs
+            optode.ch_firf = td2fc(irf,optode.fAxis,optode.tAxis,2);
         end
         
         % Update optode positions
