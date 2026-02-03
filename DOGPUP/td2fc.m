@@ -11,7 +11,10 @@ function out = td2fc(funTD,f,t,dim)
 % out = fourier coefficients for function
 
 % error checks
-if length(t) ~= size(funTD,dim)
+if any([isempty(funTD),isempty(f),isempty(t),isempty(dim)])
+    out = [];
+    return
+elseif length(t) ~= size(funTD,dim)
     error('Size along given dimension does not match given time axis')
 elseif dim > ndims(funTD)
     error('Function dimensions and given dimension mismatch')

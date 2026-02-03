@@ -89,7 +89,7 @@ classdef dMesh
 
         % link optode class to mesh class
         function mesh = add_optode(mesh,optode)
-            % snaps optodes to nearese surface of the mesh and links the
+            % snaps optodes to nearest surface of the mesh and links the
             % two objects
             optode = snap2mesh(optode,mesh);
             mesh.optode = optode;
@@ -151,7 +151,8 @@ classdef dMesh
             % OUTPUT
             % data = Fourier coefficients of fluence at detectors (NM x NF)
 
-            i = kron((1:size(mesh.optode.d_positions,1)).',ones(3,1));
+            i = kron((1:size(mesh.optode.d_positions,1)).',ones(4,1));
+            i = i(mesh.optode.d_bary(:,2:end).'>0);
             j = gather(mesh.elem(mesh.optode.d_bary(:,1),:)).';
             j = double(j(:));
             j = j(mesh.optode.d_bary(:,2:end).'>0);
@@ -242,10 +243,11 @@ classdef dMesh
             
             tdisp('\ngenerating complex absorption jacobian...',displayFlag)
             % interpolate fluences to grid
-            phi_Grid = reshape(mesh.m2g*reshape(phi,size(phi,1),[]),[],size(phi,2), size(phi,3));
-            phiA_Grid = reshape(mesh.m2g*reshape(phiA,size(phiA,1),[]),[],size(phiA,2), size(phiA,3));
+            phi_Grid = mesh.m2g*reshape(phi(:,:,mesh.optode.link(:,1)),size(phi,1),[]);
+            phiA_Grid = mesh.m2g*reshape(phiA(:,:,mesh.optode.link(:,2)),size(phiA,1),[]);
             % correctly reshape to voxels
-            J = -phi_Grid(:,:,mesh.optode.link(:,1)).*phiA_Grid(:,:,mesh.optode.link(:,2)).*mesh.dxyz^3; % voxel_mua x freq x meas
+            J = -phi_Grid.*phiA_Grid.*mesh.dxyz^3; % voxel_mua x freq*meas
+            J = reshape(J,size(phi_Grid,1),[],size(mesh.optode.link,1)); % voxel_mua x freq x meas
             J = permute(J,[3 2 1]); % meas x freq x voxel_mua
             
             tdisp('done!\n',displayFlag)
@@ -253,19 +255,13 @@ classdef dMesh
             if strcmp(type,'full')
 
                 tdisp('\ngenerating complex reduced scattering jacobian...',displayFlag)
-                % compute gradient
-                phi_Grid = reshape(phi_Grid,[mesh.gridSize 1 size(phi,2) size(phi,3)]);
-                phiA_Grid = reshape(phiA_Grid,[mesh.gridSize 1 size(phiA,2) size(phiA,3)]);
-                [y,x,z] = gradient(phi_Grid);
-                phi_grad = cat(4,x,y,z);
-                [y,x,z] = gradient(phiA_Grid);
-                phiA_grad = cat(4,x,y,z);
-                
-                % dot product of gradients for diffusion sensitivity
-                Jk = squeeze(sum((phi_grad(:,:,:,:,:,mesh.optode.link(:,1)).*phiA_grad(:,:,:,:,:,mesh.optode.link(:,2))),4).*mesh.dxyz^3);
-                
-                % correctly reshape to voxels and scale to scattering
-                Jk = 3.*reshape(Jk,[prod(size(Jk,[1 2 3])) size(Jk,4) size(Jk,5)]).*(mesh.m2g*(mesh.kappa.^2)); % voxel_kappa x freq x meas
+                % compute gradient with matrices
+                [Dx,Dy,Dz] = grid_grad(mesh);
+                % dot product of gradients
+                Jk = (Dx*phi_Grid).*(Dx*phiA_Grid) + (Dy*phi_Grid).*(Dy*phiA_Grid) + (Dz*phi_Grid).*(Dz*phiA_Grid);
+                Jk = Jk.*mesh.dxyz^3; % voxel_kappa x freq*meas
+                Jk = reshape(Jk,size(phi_Grid,1),[],size(mesh.optode.link,1)); % voxel_kappa x freq x meas
+                Jk = Jk.*(mesh.m2g*(1./(3.*mesh.kappa.^2)));
                 Jk = permute(Jk,[3 2 1]); % meas x freq x voxel_kappa
 
                 J = cat(3,J,Jk); % meas x freq x [voxel_mua voxel_kappa]
@@ -306,7 +302,8 @@ classdef dMesh
             end
             target = target./sum(target,1);
             target = -(target).';
-            target(:,~mesh.gridinmesh) = 0;
+            % target(:,~mesh.gridinmesh) = 0;
+            target = target(:,mesh.gridinmesh);
         end
 
         %% Slicing and interpolation methods
@@ -323,8 +320,8 @@ classdef dMesh
         % mesh.grid = grid points [NV x 3] (mm)
         % mesh.gridSize = number of voxels in x,y and z [1 x 3]
         % mesh.dxyz = resolution of voxel grid
-        % mesh.m2g = interpolation matrix from mesh to grid [NV x NN]
-        % mesh.g2m = interpolation matrix from grid to mesh [NN x NV]
+        % mesh.m2g = interpolation matrix from mesh to grid [NV (in mesh) x NN]
+        % mesh.g2m = interpolation matrix from grid to mesh [NN x NV (in mesh)]
         % mesh.gridinmesh = binary flag, true if voxel is inside mesh [NV x 1]
 
         % NV = number of voxels, NN = number of nodes
@@ -343,7 +340,7 @@ classdef dMesh
         mesh.gridinmesh = logical(~isnan(idInt));
         
         % use barycentric co-ords to form interpolation matrix
-        i = find(mesh.gridinmesh);
+        i = (1:sum(mesh.gridinmesh)).';
         i = repelem(i,4,1);
         
         j = double(mesh.elem(idInt(mesh.gridinmesh),:)).';
@@ -352,41 +349,37 @@ classdef dMesh
         v = bary(mesh.gridinmesh,:).';
         v = v(:);
         
-        mesh.m2g = sparse(i,j,v,size(mesh.grid,1),size(mesh.node,1));
+        mesh.m2g = sparse(i,j,v,sum(mesh.gridinmesh),size(mesh.node,1));
         clearvars i j v
         
         %% Calculate grid to mesh transform matrix
         % find barycentric co-ords of each node w.r.t voxel grid
-        elemG = delaunay(mesh.grid);
-        TR = triangulation(elemG,mesh.grid);
+        elemG = delaunay(mesh.grid(mesh.gridinmesh,:));
+        TR = triangulation(elemG,mesh.grid(mesh.gridinmesh,:));
         [idInt,bary] = pointLocation(TR,mesh.node);
+        meshingrid = logical(~isnan(idInt));
         
         % use barycentric co-ords to form interpolation matrix
         % removes weighting from voxel points outside mesh
-        
-        j = double(elemG(idInt,:)).';
-        eleminmesh = logical(mesh.gridinmesh(j));
-        j = j(eleminmesh);
-        
+
         i = 1:size(mesh.node,1);
+        i = i(meshingrid).';
         i = repelem(i,4,1);
-        i = i(eleminmesh);
         
-        bary = bary.';
-        v = bary(eleminmesh);
+        j = double(elemG(idInt(meshingrid),:)).';
+        j = j(:);
+        
+        bary = bary(meshingrid,:).';
+        v = bary(:);
         
         % find nodes that are outside voxel grid
-        if any(sum(eleminmesh,1) < 1)
+        if sum(meshingrid) < size(mesh.node,1)
         
             % nearest neighbour interpolation for nodes that lie in the zero space
-            idx = find(sum(eleminmesh,1) < 1);
+            idx = ~meshingrid;
             iS = 1:size(mesh.node,1);
             iS = iS(idx).';
-            elemG = delaunay(mesh.grid(mesh.gridinmesh,:));
-            TR = triangulation(elemG,mesh.grid(mesh.gridinmesh,:));
             jS = nearestNeighbor(TR,mesh.node(idx,:));
-            jtemp = find(mesh.gridinmesh);
-            jS = jtemp(jS);
             vS = ones(length(iS),1);
             
             i = [i; iS];
@@ -395,7 +388,7 @@ classdef dMesh
         
         end
         
-        mesh.g2m = sparse(i,j,v,size(mesh.node,1),size(mesh.grid,1));
+        mesh.g2m = sparse(i,j,v,size(mesh.node,1),sum(mesh.gridinmesh));
         norm = sum(mesh.g2m,2);
         norm(norm==0) = 1;
         mesh.g2m = mesh.g2m./norm;
@@ -405,6 +398,102 @@ classdef dMesh
         mesh.dxyz = dx;
         
         
+        end
+
+        % Generate derivative matrices for grid
+        function [Dx,Dy,Dz] = grid_grad(mesh)
+
+            % sizes
+            N_x = mesh.gridSize(1);
+            N_y = mesh.gridSize(2);
+            N_z = mesh.gridSize(3);
+            N = N_x*N_y*N_z;
+
+            % identity matrices for Kronecker products
+            Ix = speye(N_x);
+            Iy = speye(N_y);
+            Iz = speye(N_z);
+
+            % mask matrix
+            W = spdiags(double(mesh.gridinmesh),0,N,N);
+  
+            % mask voxel image
+            mask = reshape(mesh.gridinmesh, N_x, N_y, N_z);
+            
+            for d = 1:3
+                % compute central difference matrix for dimension d
+                switch d
+                    case 1 % x derivative
+                        D = spdiags([-1/2 1/2]./mesh.dxyz,[-1 1],N_x,N_x);
+                        D = kron(Iz, kron(Iy, D));
+                        v_idx = 1;
+                    case 2 % y derivative
+                        D = spdiags([-1/2 1/2]./mesh.dxyz,[-1 1],N_y,N_y);
+                        D = kron(Iz, kron(D, Ix));
+                        v_idx = N_x;
+                    case 3 % z derivative
+                        D = spdiags([-1/2 1/2]./mesh.dxyz,[-1 1],N_z,N_z);
+                        D = kron(D, kron(Iy, Ix));
+                        v_idx = N_x*N_y;
+                end
+
+                % mask external voxels
+                D = W*D*W;
+
+                % boundary index
+                boundary = (mask & (~circshift(mask,1,d) | ~circshift(mask,-1,d)));
+                boundary = boundary(:);
+                % forward/backward difference at boundaries
+                D(boundary,:) = 0;
+                i = find(boundary);
+                j = [i-v_idx i i+v_idx];
+                j(~ismember(j,find(mesh.gridinmesh))) = 0;
+                j = sort(j,2);
+                j = j(:,2:3);
+
+                % find isolated voxels
+                idx = sum(logical(j),2) < 2;
+                i_s = i(idx);
+                
+                % mask and boundary derivative
+                i = i(~idx);
+                i = repelem(i,1,2);
+                j = j(~idx,:);
+                v = repelem([-1 1],size(j,1),1)./mesh.dxyz;
+                D = D + sparse(i(:),j(:),v(:),size(D,1),size(D,1));
+                
+                % interploation matrix from nearest values for
+                % isolated voxels
+                j_s = [i_s-N_x*N_y i_s-N_x i_s-1 i_s+1 i_s+N_x i_s+N_x*N_y];
+                j_s(~ismember(j_s,find(mesh.gridinmesh))) = 0;
+                i_s = repelem(i_s,1,6);
+                v_s = 1./sum(logical(j_s),2);
+                v_s(isinf(v_s)) = 0;
+                v_s = repelem(v_s,1,6);
+
+                % i = unique(i);
+                % j = i;
+                % v = ones(size(i));
+
+                I_mat = sparse(i_s(j_s>0),j_s(j_s>0),v_s(j_s>0),N,N) + speye(N);
+                D = I_mat*D;
+                
+                switch d
+                    case 1 % x derivative
+                        Dx = D;
+                    case 2 % y derivative
+                        Dy = D;
+                    case 3 % z derivative
+                        Dz = D;
+                end
+
+            end
+
+            % restrict to voxels inside mesh
+            Dx = Dx(mesh.gridinmesh,mesh.gridinmesh);
+            Dy = Dy(mesh.gridinmesh,mesh.gridinmesh);
+            Dz = Dz(mesh.gridinmesh,mesh.gridinmesh);
+
         end
 
         % function to interpolate values to different mesh
@@ -426,20 +515,20 @@ classdef dMesh
             val_int = zeros(size(mesh.node,1),size(val,2));
             for i = 1:size(val_int,2)
                 temp = val(:,i);
-                val_int(:,i) = sum(bary.*temp(old_elem(ind,:)),2);
+                val_int(~isnan(ind),i) = sum(bary(~isnan(ind),:).*temp(old_elem(ind(~isnan(ind)),:)),2);
             end
 
-            % fill NaNs with nearest neighbours
-            out_node = mesh.node(isnan(ind));
-            in_node = mesh.node(~isnan(out_node));
-            k = find(~isnan(out_node));
-            k = k(dsearchn(in_node,out_node));
-            val_int(out_node,:) = val_int(k,:);
+            % fill outlying nodes with nearest neighbours
+            out_node = mesh.node(isnan(ind),:);
+            in_node = mesh.node(~isnan(ind),:);
+            val_in = val_int(~isnan(ind),:);
+            k = dsearchn(in_node,out_node);
+            val_int(isnan(ind),:) = val_in(k,:);
 
         end
         
-        % function to slice mesh to grid for display forms 128 x 128 image
-        function [sliceMat,points] = mesh_slice(mesh,plane)
+        % function to slice mesh to grid for display forms 256 x 256 image
+        function [sliceMat,points,plane] = mesh_slice(mesh,plane)
             % generates matrix transform to find slice of function defined
             % on mesh
 
@@ -454,9 +543,15 @@ classdef dMesh
 
             % NN = number of nodes
             
-            if ischar(plane) == 0
-                error('Char input required for slicing plane')
-            elseif ~strcmpi(plane(1:2),'x=') && ~strcmpi(plane(1:2),'y=') && ~strcmpi(plane(1:2),'z=')
+            % check if string/char and remove whitespace
+            if ischar(plane) == 0 && isstring(plane) == 0
+                error('Char/Str input required for slicing plane')
+            else
+                plane = convertStringsToChars(plane);
+                plane = erase(plane,' ');
+            end
+
+            if ~strcmpi(plane(1:2),'x=') && ~strcmpi(plane(1:2),'y=') && ~strcmpi(plane(1:2),'z=')
                 error('Format for slicing plane is similar to ''x=30''')
             end
 
@@ -576,7 +671,8 @@ classdef dMesh
             xlabel('z (mm)')
             ylabel('x (mm)')
             zlabel('y (mm)')
-            view(45,45)
+            set(gca,'XDir','normal','YDir','reverse','ZDir','normal')
+            view(-45,45)
             axis equal
             drawnow
         end
@@ -595,8 +691,8 @@ classdef dMesh
             % plot
             hold on
             plotdmesh(mesh,alpha)
-            scatter3(mesh.optode.s_positions(:,3),mesh.optode.s_positions(:,1),mesh.optode.s_positions(:,2),20,'r','filled')
-            scatter3(mesh.optode.d_positions(:,3),mesh.optode.d_positions(:,1),mesh.optode.d_positions(:,2),20,'b','filled')
+            p1 = scatter3(mesh.optode.s_positions(:,3),mesh.optode.s_positions(:,1),mesh.optode.s_positions(:,2),20,'r','filled');
+            p2 = scatter3(mesh.optode.d_positions(:,3),mesh.optode.d_positions(:,1),mesh.optode.d_positions(:,2),20,'b','filled');
 
             if nargin < 3 || lbl_flag == true
                 % number sources and detectors
@@ -611,10 +707,31 @@ classdef dMesh
                 text(txtPos(:,3)+dr(:,3),txtPos(:,1)+dr(:,1),txtPos(:,2)+dr(:,2),dtxt,'Color','blue')
             end
 
+            % Format datatip
+            mytip = datatip(p1);
+            txt1 = dataTipTextRow('X','YData');
+            txt2 = dataTipTextRow('Y','ZData');
+            txt3 = dataTipTextRow('Z','XData');
+            p1.DataTipTemplate.DataTipRows(1) = txt1;
+            p1.DataTipTemplate.DataTipRows(2) = txt2;
+            p1.DataTipTemplate.DataTipRows(3) = txt3;
+            delete(mytip);
+
+            % Format datatip
+            mytip = datatip(p2);
+            txt1 = dataTipTextRow('X','YData');
+            txt2 = dataTipTextRow('Y','ZData');
+            txt3 = dataTipTextRow('Z','XData');
+            p2.DataTipTemplate.DataTipRows(1) = txt1;
+            p2.DataTipTemplate.DataTipRows(2) = txt2;
+            p2.DataTipTemplate.DataTipRows(3) = txt3;
+            delete(mytip);
+
             % view, labels and scale
             xlabel('z (mm)')
             ylabel('x (mm)')
             zlabel('y (mm)')
+            set(gca,'XDir','normal','YDir','reverse','ZDir','normal')
             view(-45,45)
             daspect([1 1 1])
             drawnow
@@ -638,7 +755,7 @@ classdef dMesh
             % NN = number of nodes, NI = number of inclusions
 
             % slice function on plane
-            [sliceMat,points] = mesh_slice(mesh,plane);
+            [sliceMat,points,plane] = mesh_slice(mesh,plane);
             fun = sliceMat*fun;
 
             % plot inclusion stats
@@ -656,7 +773,6 @@ classdef dMesh
                 y = reshape(points(:,2),res,res);
                 z = reshape(points(:,3),res,res);
                 fun = reshape(fun,res,res);
-                colormap(map)
                 im = imagesc([z(1) z(end)],[y(1) y(end)],fun);
                 set(im, 'AlphaData', ~isnan(fun))
                 set(gca,'YDir','normal')
@@ -670,8 +786,8 @@ classdef dMesh
                 im.DataTipTemplate.DataTipRows(2) = txt2;
                 im.DataTipTemplate.DataTipRows(3) = [];
                 delete(mytip);
-                xlim([floor(min(z(~isnan(fun)))) ceil(max(z(~isnan(fun))))])
-                ylim([floor(min(y(~isnan(fun)))) ceil(max(y(~isnan(fun))))])
+                xlim([floor(min(mesh.node(:,3))) ceil(max(mesh.node(:,3)))])
+                ylim([floor(min(mesh.node(:,2))) ceil(max(mesh.node(:,2)))])
 
                 % plot inclusion ground truth
                 if  nargin > 4
@@ -695,7 +811,6 @@ classdef dMesh
                 x = reshape(points(:,1),res,res);
                 z = reshape(points(:,3),res,res);
                 fun = reshape(fun,res,res).';
-                colormap(map)
                 im = imagesc([x(1) x(end)],[z(1) z(end)],fun);
                 set(im, 'AlphaData', ~isnan(fun))
                 set(gca,'YDir','normal')
@@ -709,8 +824,8 @@ classdef dMesh
                 im.DataTipTemplate.DataTipRows(2) = txt2;
                 im.DataTipTemplate.DataTipRows(3) = [];
                 delete(mytip);
-                xlim([floor(min(x(~isnan(fun)))) ceil(max(x(~isnan(fun))))])
-                ylim([floor(min(z(~isnan(fun)))) ceil(max(z(~isnan(fun))))])
+                xlim([floor(min(mesh.node(:,1))) ceil(max(mesh.node(:,1)))])
+                ylim([floor(min(mesh.node(:,3))) ceil(max(mesh.node(:,3)))])
 
                 % plot inclusion ground truth
                 if  nargin > 4
@@ -734,7 +849,6 @@ classdef dMesh
                 x = reshape(points(:,1),res,res);
                 y = reshape(points(:,2),res,res);
                 fun = reshape(fun,res,res);
-                colormap(map)
                 im = imagesc([y(1) y(end)],[x(1) x(end)],fun);
                 set(im, 'AlphaData', ~isnan(fun))
                 set(gca,'YDir','normal')
@@ -749,8 +863,8 @@ classdef dMesh
                 im.DataTipTemplate.DataTipRows(2) = txt2;
                 im.DataTipTemplate.DataTipRows(3) = [];
                 delete(mytip);
-                xlim([floor(min(x(~isnan(fun)))) ceil(max(x(~isnan(fun))))])
-                ylim([floor(min(y(~isnan(fun)))) ceil(max(y(~isnan(fun))))])
+                xlim([floor(min(mesh.node(:,1))) ceil(max(mesh.node(:,1)))])
+                ylim([floor(min(mesh.node(:,2))) ceil(max(mesh.node(:,2)))])
 
                 % plot inclusion ground truth
                 if  nargin > 4
@@ -770,6 +884,7 @@ classdef dMesh
                 end
             end
 
+            colormap(gca,map)
             clim([min(fun(:)) max(fun(:))])
             set(gca,'Color',[0.9 0.9 0.9])
             daspect([1 1 1])
@@ -787,8 +902,10 @@ classdef dMesh
             x = reshape(mesh.grid(:,1),res(1),res(2),res(3));
             y = reshape(mesh.grid(:,2),res(1),res(2),res(3));
             z = reshape(mesh.grid(:,3),res(1),res(2),res(3));
-            fun(~mesh.gridinmesh) = NaN;
-            fun = reshape(fun,res(1),res(2),res(3));
+
+            fun_plot = NaN.*zeros(size(mesh.grid,1),1);
+            fun_plot(mesh.gridinmesh) = fun;
+            fun_plot = reshape(fun_plot,res(1),res(2),res(3));
 
             if strcmp(plane(1:2),'x=')
                 % convert slice position to nearest slice index
@@ -797,10 +914,9 @@ classdef dMesh
                 % plot sliced plane
                 y = pagetranspose(squeeze(y(sIdx,:,:)));
                 z = pagetranspose(squeeze(z(sIdx,:,:)));
-                fun = squeeze(fun(sIdx,:,:));
-                colormap(map)
-                im = imagesc([z(1) z(end)],[y(1) y(end)],fun);
-                set(im, 'AlphaData', ~isnan(fun))
+                fun_plot = squeeze(fun_plot(sIdx,:,:));
+                im = imagesc([z(1) z(end)],[y(1) y(end)],fun_plot);
+                set(im, 'AlphaData', ~isnan(fun_plot))
                 view(0,270)
                 xlabel('z (mm)')
                 ylabel('y (mm)')
@@ -820,10 +936,9 @@ classdef dMesh
                 % plot sliced plane
                 x = pagetranspose(squeeze(x(:,sIdx,:)));
                 z = pagetranspose(squeeze(z(:,sIdx,:)));
-                fun = pagetranspose(squeeze(fun(:,sIdx,:)));
-                colormap(map)
-                im = imagesc([x(1) x(end)],[z(1) z(end)],fun);
-                set(im, 'AlphaData', ~isnan(fun))
+                fun_plot = pagetranspose(squeeze(fun_plot(:,sIdx,:)));
+                im = imagesc([x(1) x(end)],[z(1) z(end)],fun_plot);
+                set(im, 'AlphaData', ~isnan(fun_plot))
                 view(0,270)
                 xlabel('x (mm)')
                 ylabel('z (mm)')
@@ -843,10 +958,9 @@ classdef dMesh
                 % plot sliced plane
                 x = pagetranspose(squeeze(x(:,:,sIdx)));
                 y = pagetranspose(squeeze(y(:,:,sIdx)));
-                fun = pagetranspose(squeeze(fun(:,:,sIdx)));
-                colormap(map)
-                im = imagesc([x(1) x(end)],[y(1) y(end)],fun);
-                set(im, 'AlphaData', ~isnan(fun))
+                fun_plot = pagetranspose(squeeze(fun_plot(:,:,sIdx)));
+                im = imagesc([x(1) x(end)],[y(1) y(end)],fun_plot);
+                set(im, 'AlphaData', ~isnan(fun_plot))
                 view(0,270)
                 xlabel('x (mm)')
                 ylabel('y (mm)')
@@ -860,6 +974,7 @@ classdef dMesh
                 delete(mytip);               
             end
 
+            colormap(gca,map)
             set(gca,'Color',[0.9 0.9 0.9])
             daspect([1 1 1])
             drawnow
@@ -922,34 +1037,38 @@ classdef dMesh
         end
         
         % plot isosurface
-        function plotfun_vol(mesh,funGT,fun)
+        function plotfun_vol(mesh,funGT,fun,clrs)
             % plots dice thresholded isosurface of function defined on mesh
 
             % INPUT
             % mesh = DOGPUP mesh
             % funGT = function defined on mesh [NN x 1]
             % fun = another function defined on mesh [NN x 1]
+            % clrs = RGB values for isosurfaces [2 x 3]
 
             % NN = number of nodes
+            
+            if nargin < 4 || isempty(clrs)
+                clrs = [0.05 0.05 0.05;...
+                        1   0   0  ];
+            end
 
             [sliceMat,points] = mesh_slice3(mesh);
             [points,idx] = sortrows([points(:,3),points(:,1),points(:,2)]);
             Z = reshape(points(:,1),64,64,64);
             X = reshape(points(:,2),64,64,64);
             Y = reshape(points(:,3),64,64,64);
-
-            hold on
+            
             plotdmesh(mesh,0.1)
-            if nargin > 2
+            hold on
+            if nargin > 2 && ~isempty(fun)
                 fun = sliceMat*fun;
                 fun = reshape(fun(idx),64,64,64);
                 iso_thresh = 0.5.*(median(fun(fun>0),'all') + max(fun,[],'all'));
                 iso = isosurface(Z,X,Y,fun,iso_thresh);
                 p = patch(iso);
-                set(p,'FaceColor',[1 0 0],'FaceAlpha',0.4);  
+                set(p,'FaceColor',clrs(2,:),'FaceAlpha',0.4);  
                 set(p,'EdgeColor','none');
-                camlight;
-                lighting gouraud;
             end
             
             funGT = sliceMat*funGT;
@@ -957,12 +1076,11 @@ classdef dMesh
             iso_thresh = 0.5.*(median(funGT(funGT>0),'all') + max(funGT,[],'all'));
             iso = isosurface(Z,X,Y,funGT,iso_thresh);
             p = patch(iso);
-            set(p,'FaceColor',[0.3 0.3 0.3],'FaceAlpha',0.4);
-            camlight;
-            lighting gouraud;
+            set(p,'FaceColor',clrs(1,:),'FaceAlpha',0.4);
             set(p,'EdgeColor','none');
             drawnow
             daspect([1 1 1])
+            grid off
         end
     
     end
@@ -1007,28 +1125,19 @@ function mesh = prepare_mesh(mesh)
     mesh.bnd = zeros(size(mesh.node,1),1);
     mesh.bnd(idx) = 1;
     
-    % SURFACE ELEMENT CENTRE OF MASS
-    x = (sum(reshape(mesh.node(mesh.face.',1),3,[]))./3).';
-    y = (sum(reshape(mesh.node(mesh.face.',2),3,[]))./3).';
-    z = (sum(reshape(mesh.node(mesh.face.',3),3,[]))./3).';
-    com = [x y z];
-    
     % ORIENT FACE ELEMENT NORMAL TO BE OUTWARD FACING AND CALCULATES AREA
-    % viewing direction, defined as face CoM to mesh CoM
-    centre = [mean([max(mesh.node(:,1)) min(mesh.node(:,1))]),...
-            mean([max(mesh.node(:,2)) min(mesh.node(:,2))]),...
-            mean([max(mesh.node(:,3)) min(mesh.node(:,3))])]; % mesh CoM
-    vDir = (centre-com)./vecnorm(centre-com,2,2); % view vector
-    % checks if normal is outward facing by dot product sign and corrects
-    aVec = mesh.node(mesh.face(:,2),:)-mesh.node(mesh.face(:,1),:);
-    bVec = mesh.node(mesh.face(:,3),:)-mesh.node(mesh.face(:,1),:);
-    signA = sign(dot(cross(aVec,bVec,2),vDir,2));
-    mesh.face(signA>0,[end-1,end]) = mesh.face(signA>0,[end,end-1]);
+    % reorient face index
+    [~,face] = meshcheckrepair(mesh.node,mesh.face,'deep');
+    % map back to original indexing
+    LUT = [unique(face) unique(mesh.face)];
+    face = interp1(LUT(:,1),LUT(:,2),face(:));
+    mesh.face = reshape(face,size(mesh.face));
+    % calculate area
     aVec = mesh.node(mesh.face(:,2),:)-mesh.node(mesh.face(:,1),:);
     bVec = mesh.node(mesh.face(:,3),:)-mesh.node(mesh.face(:,1),:);
     normFace = cross(aVec,bVec,2);
     mesh.area = sqrt(sum(normFace.^2,2)).*0.5;
-    
+
     % Boundary conditions and stiffness mapping
     
     % FACTOR FOR BOUNDARY CONDITIONS

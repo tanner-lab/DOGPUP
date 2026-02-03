@@ -1,8 +1,7 @@
-# DOGPUP
-## Diffuse Optics by GPU Parallelisation
+# DOGPUP_test
 Toolkit for fast parallelised time-domain diffuse optical tomography
 
-- Version 1.1.0
+- Version 1.1.1
 - Author: Ifechi Ejidike
 
 ## Features
@@ -13,7 +12,7 @@ Toolkit for fast parallelised time-domain diffuse optical tomography
 - Reconstruction
     - Calculation of multi-frequency FD Jacobians/sensitivities
     - Calculation of TD and TG Jacobians
-    - Weighted Levenburg-Marquardt reconstruction of absorption using TG/TD datatypes
+    - Weighted Levenburg-Marquardt reconstruction of absorption and scattering using TG/TD datatypes
 - Data and mesh display
 
 ## Tutorials
@@ -47,10 +46,17 @@ Source code for mex routines can be found in `DOGPUP/cuda_lib/mex_sources`, thes
     - IRF is now defined per channel rather than globally 
     - Added reduced scattering Jacobian generation
     - Added weighted scattering coefficient reconstruction
+- v1.1.1
+    - `dMesh.mesh2grid()` interpolation is now more efficient. Ignores gridpoints outside mesh which avoids bloat in variables defined on grid
+    - Following the above change **meshes saved from older versions are no longer compatible**. Using `dMesh.mesh2grid()` to update their interpolation matrices fixes this
+    - Option to define noise floor added in `id_thresh.m`. Important for noisy data 
 
-## To be added
+## Known issues and features to be added (in no particular order...)
 
+- Current dual-property reconstruction results in very low contrast scattering coefficients. Reconstruction localisation and similarity is still good, more testing to be done.
+- Examples with noisy data
 - Remove reliance on MATLAB toolboxes
+- Source-detector placement optimisation routines
 
 ## Acknowledgement
 
@@ -64,6 +70,3 @@ The iso2mesh toolbox interacts with external meshing tools the licensing of some
 *Anh Phong Tran, Shijie Yan and Qianqian Fang, (2020) "[Improving model-based fNIRS analysis using mesh-based anatomical and light-transport models](https://doi.org/10.1117/1.NPh.7.1.015008)," Neurophotonics, 7(1), 015008
 
 *Qianqian Fang and David Boas, "[Tetrahedral mesh generation from volumetric binary and gray-scale images](https://iso2mesh.sourceforge.net/upload/ISBI2009_abstract_final_web.pdf)," Proceedings of IEEE International Symposium on Biomedical Imaging 2009, pp. 1142-1145, 2009
-
-
-

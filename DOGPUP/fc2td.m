@@ -11,7 +11,10 @@ function out = fc2td(funFC,f,t,dim)
 % out = time domain signal for given FC
 
 % error checks
-if length(f) ~= size(funFC,dim)
+if any([isempty(funFC),isempty(f),isempty(t),isempty(dim)])
+    out = [];
+    return
+elseif length(f) ~= size(funFC,dim)
     error('Size along given dimension does not match given fourier coefficients')
 elseif dim > ndims(funFC)
     error('Function dimensions and given dimension mismatch')
