@@ -1,4 +1,4 @@
-# DOGPUP_test
+# Diffuse Optics by GPU Parallelisation (DOGPUP)
 Toolkit for fast parallelised time-domain diffuse optical tomography
 
 - Version 1.1.1
