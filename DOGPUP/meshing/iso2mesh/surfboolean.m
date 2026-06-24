@@ -118,7 +118,7 @@ for i = 1:3:len
             newnode(:, 4) = 1;
             newelem(:, 4) = 1;
         end
-        opstr = ' --decouple-inin 1 --shells 2'; % -q
+        opstr = ' --decouple-inin 1e-3 --shells 2'; % -q
         saveoff(node1(:, 1:3), elem1(:, 1:3), mwpath('pre_decouple1.off'));
         if (size(no, 2) ~= 3)
             opstr = ['-q --shells ' num2str(no)];
@@ -136,7 +136,7 @@ for i = 1:3:len
             newnode(:, 4) = 1;
             newelem(:, 4) = 1;
         end
-        opstr = [' --decouple-outout 1 --shells 2']; % -q
+        opstr = [' --decouple-outout 1e-3 --shells 2']; % -q
         saveoff(node1(:, 1:3), elem1(:, 1:3), mwpath('pre_decouple1.off'));
         if (size(no, 2) ~= 3)
             opstr = ['-q --shells ' num2str(no)];
@@ -167,12 +167,12 @@ for i = 1:3:len
         end
     elseif (strcmp(op, 'remesh'))
         saveoff(newnode(:, 1:3), newelem(:, 1:3), mwpath(['pre_surfbool1.' tempsuff]));
-        cmd = sprintf('cd "%s" && "%s%s" %s%s "%s" "%s" -%d', mwpath, mcpath(exename), exesuff, '-', ...
+        cmd = sprintf('cd "%s" && "%s" %s%s "%s" "%s" -%d', mwpath, mcpath(exename, exesuff), '-', ...
                       opstr, mwpath(['pre_surfbool1.' tempsuff]), mwpath('post_surfbool.off'), randseed);
     else
         saveoff(newnode(:, 1:3), newelem(:, 1:3), mwpath(['pre_surfbool1.' tempsuff]));
         saveoff(no(:, 1:3), el(:, 1:3), mwpath(['pre_surfbool2.' tempsuff]));
-        cmd = sprintf('cd "%s" && "%s%s" %s%s "%s" "%s" "%s" -%d', mwpath, mcpath(exename), exesuff, '-', ...
+        cmd = sprintf('cd "%s" && "%s" %s%s "%s" "%s" "%s" -%d', mwpath, mcpath(exename, exesuff), '-', ...
                       opstr, mwpath(['pre_surfbool1.' tempsuff]), mwpath(['pre_surfbool2.' tempsuff]), mwpath('post_surfbool.off'), randseed);
     end
     [status, outstr] = system(cmd);

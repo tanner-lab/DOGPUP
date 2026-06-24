@@ -52,12 +52,16 @@ classdef dOptode < matlab.mixin.Copyable
             %  Global value setup
             optode.link = link;
             optode.Nf = Nf;
-            optode.dt = tAxis(2) - tAxis(1);
-            optode.tAxis = tAxis;
-            T = optode.tAxis(end);
-            w0 = 2*pi/T;
-            optode.fAxis = (0:Nf-1).*w0;
-            optode.df = optode.fAxis(2) - optode.fAxis(1);
+            if ~isempty(tAxis)
+                optode.dt = tAxis(2) - tAxis(1);
+                optode.tAxis = tAxis;
+                T = optode.tAxis(end);
+            end
+            if ~isempty(Nf)
+                w0 = 2*pi/T;
+                optode.fAxis = (0:Nf-1).*w0;
+                optode.df = optode.fAxis(2) - optode.fAxis(1);
+            end
 
             % Detector setup
             optode.d_positions = d_pos;
@@ -66,11 +70,13 @@ classdef dOptode < matlab.mixin.Copyable
             % IRFs
             optode.ch_tirf = irf;
             % convert to fourier coeffs
-            optode.ch_firf = td2fc(irf,optode.fAxis,optode.tAxis,2);  
+            if ~isempty(irf) && ~isempty(Nf) && ~isempty(tAxis)
+                optode.ch_firf = td2fc(irf,optode.fAxis,optode.tAxis,2);
+            end
         end
 
         % Snap optodes to mesh
-        function optode = snap2mesh(optode,mesh)
+        function snap2mesh(optode,mesh)
             % snap source and detector correctly to mesh
 
             % INPUT
@@ -82,8 +88,14 @@ classdef dOptode < matlab.mixin.Copyable
             % snap source to surface
             [optode.s_positions,optode.s_bary,optode.s_dirs] = snap_pos(mesh,optode.s_positions);
             % snap source one scattering distance inside
-            positions_temp = optode.s_positions + 1/(min(mesh.musp)).*optode.s_dirs;
+            musp_step = mean(mesh.musp(mesh.elem(optode.s_bary(:,1),:)),2);
+            positions_temp = optode.s_positions + 1./musp_step.*optode.s_dirs;
             TR = triangulation(double(mesh.elem),mesh.node);
+            [bary_id] = pointLocation(TR,positions_temp);
+            % catch misattributed source normals
+            id = isnan(bary_id);
+            optode.s_dirs(id,:) = -optode.s_dirs(id,:);
+            positions_temp = optode.s_positions + 1./musp_step.*optode.s_dirs;
             [bary_id,bary_w] = pointLocation(TR,positions_temp);
             % fix rounding error
             bary_w(bary_w<1e-10) = 0;
@@ -94,7 +106,7 @@ classdef dOptode < matlab.mixin.Copyable
 
         %% Optode Update Methods        
         % Update source pulse parameters
-        function optode = update_irf(optode,irf,tAxis,Nf)
+        function update_irf(optode,irf,tAxis,Nf)
             % Function to update optode source tpsf
 
             % OUTPUT
@@ -115,7 +127,7 @@ classdef dOptode < matlab.mixin.Copyable
         end
         
         % Update optode positions
-        function optode = update_positions(optode,s_pos,d_pos,link)
+        function update_positions(optode,s_pos,d_pos,link)
             % Function to update optode positions
             
             % INPUT
@@ -187,7 +199,7 @@ function [pos,bary,norm] = snap_pos(mesh,pos)
     
         % fix rounding error
         temp_bary = bary(:,2:end);
-        temp_bary(temp_bary<1e-10) = 0;
+        temp_bary(temp_bary<1e-12) = 0;
         temp_bary = temp_bary./sum(temp_bary,2);
         bary(:,2:end) = temp_bary;
 

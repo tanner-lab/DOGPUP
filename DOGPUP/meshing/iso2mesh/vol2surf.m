@@ -82,13 +82,14 @@ if (~isempty(img))
         maxlevel = length(isovalues);
     end
 
+    % compute the region seed for each region
     for i = 1:maxlevel
         if (i < maxlevel)
             levelmask = int8(newimg >= isovalues(i) & newimg < isovalues(i + 1));
         else
             levelmask = int8(newimg >= isovalues(i));
         end
-        [levelno, levelel] = binsurface(levelmask);
+        [levelno, levelel] = binsurface(levelmask, -3);
         if (~isempty(levelel))
             if (isstruct(opt) && isfield(opt, 'autoregion'))
                 if (opt.autoregion)
@@ -106,6 +107,8 @@ if (~isempty(img))
                 else
                     regions = seeds;
                 end
+            else
+                regions(end + 1, :) = mean(levelno);
             end
         end
     end
@@ -138,7 +141,7 @@ if (~isempty(img))
             f0 = removeisolatedsurf(v0, f0, 3);
 
             if (dofix)
-                [v0, f0] = meshcheckrepair(v0, f0);
+                [v0, f0] = meshcheckrepair(v0, f0, 'meshfix');
             end
 
         elseif (nargin < 7 || strcmp(method, 'cgalsurf') || strcmp(method, 'cgalpoly'))
@@ -195,7 +198,6 @@ if (~isempty(img))
             end
             [v0, f0] = vol2restrictedtri(newimg, isovalues(i) - perturb, regions(i, :), ...
                                          sum(newdim .* newdim) * 2, 30, radbound, distbound, maxsurfnode);
-
             if (~isempty(surfside))
                 newimg = newimg0;
                 clear newimg0;

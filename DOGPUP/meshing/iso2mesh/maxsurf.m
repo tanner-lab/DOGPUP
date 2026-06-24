@@ -1,4 +1,4 @@
-function [f maxsize] = maxsurf(facecell, node)
+function [f, maxsize] = maxsurf(facecell, node)
 %
 % [f maxsize]=maxsurf(facecell,node)
 %

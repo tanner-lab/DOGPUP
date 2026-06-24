@@ -1,7 +1,7 @@
 # Diffuse Optics by GPU Parallelisation (DOGPUP)
 Toolkit for fast parallelised time-domain diffuse optical tomography
 
-- Version 1.1.1
+- Version 1.2.0
 - Author: Ifechi Ejidike
 
 ## Features
@@ -25,15 +25,17 @@ Some MATLAB live script tutorials can be found in `tutorials` that provide an in
 
 NVIDIA CUDA-enabled GPU required. Tested with compute capability from `sm_61` to `sm_89` (GTX10xx to RTX40xx).
 
-Source code for mex routines can be found in `DOGPUP/cuda_lib/mex_sources`, these can be recompiled on your machine if any compatability issues arise.
+Source code for mex routines can be found in `DOGPUP/cuda_lib/mex_sources`, these can be recompiled on your machine if any compatability issues arise using `mexcuda <cuda_source.cu>`. See [MATLAB documentation](https://uk.mathworks.com/help/parallel-computing/run-mex-functions-containing-cuda-code.html) for guidance on this
 
 ### Software
 
-**OS**: Windows, Linux
+**OS:** Windows, Linux
 
-**MATLAB Release**: tested from `2023b` to `2025a`
+**MATLAB Release:** tested from `2023b` to `2025a`
 
-**Packages**: Image Processing Toolbox and Parallel Computing Toolbox
+**Packages:**
+- Image Processing Toolbox for iso2mesh
+- Parallel Computing Toolbox (**only for compliation** of MEX-files)
 
 ## How to Install
 
@@ -41,21 +43,34 @@ Source code for mex routines can be found in `DOGPUP/cuda_lib/mex_sources`, thes
 2. Add `DOGPUP` to your path
 
 ## Changelog
+- v1.2.0
+    - More efficient solving, only dependent on cuda/mex binaries not MATLAB gpuArrays
+    - Grid to mesh interpolation is more efficient
+    - dMesh objects can now be written out and read in as JSON files
+    - Functions have been renamed
+        - `dMesh.flu_solve` -> `dMesh.get_fluence`
+        - `dMesh.adj_flu_solve` -> `dMesh.get_adjoint`
+        - `dMesh.meas_flu` -> `dMesh.get_detections`
+        - `dMesh.plotfun_vol` -> `dMesh.plotfun_iso`
+        - `dMesh.target_spots` -> `reconstruction\weighted_spots.m`
+        - `reconstruction\wgthd_LM_recon.m` -> `reconstruction\dogpup_recon.m`
+    - Plotting slices is now more user friendly, both grid data and mesh data work with `dMesh.plotfun_slice` now.
+    - Data can be plotted on sliced mesh in 3D with `dMesh.plotfun_3d`
 
-- v1.1.0
-    - IRF is now defined per channel rather than globally 
-    - Added reduced scattering Jacobian generation
-    - Added weighted scattering coefficient reconstruction
 - v1.1.1
     - `dMesh.mesh2grid()` interpolation is now more efficient. Ignores gridpoints outside mesh which avoids bloat in variables defined on grid
     - Following the above change **meshes saved from older versions are no longer compatible**. Using `dMesh.mesh2grid()` to update their interpolation matrices fixes this
     - Option to define noise floor added in `id_thresh.m`. Important for noisy data 
 
+- v1.1.0
+    - IRF is now defined per channel rather than globally 
+    - Added reduced scattering Jacobian generation
+    - Added weighted scattering coefficient reconstruction
+
+
 ## Known issues and features to be added (in no particular order...)
 
-- Current dual-property reconstruction results in very low contrast scattering coefficients. Reconstruction localisation and similarity is still good, more testing to be done.
 - Examples with noisy data
-- Remove reliance on MATLAB toolboxes
 - Source-detector placement optimisation routines
 
 ## Acknowledgement

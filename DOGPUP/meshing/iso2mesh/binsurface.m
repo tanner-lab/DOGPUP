@@ -11,6 +11,8 @@ function [node, elem] = binsurface(img, nface)
 %   nface: nface=3 or ignored - for triangular faces,
 %          nface=4 - square faces
 %          nface=0 - return a boundary mask image via node
+%          nface='iso' - call isosurface() function to return a
+%                    marching-cube based isosurface
 %
 % output:
 %   elem: integer array with dimensions of NE x nface, each row represents
@@ -21,6 +23,12 @@ function [node, elem] = binsurface(img, nface)
 %
 % -- this function is part of iso2mesh toolbox (http://iso2mesh.sf.net)
 %
+
+if (nargin > 1 && ischar(nface) && strcmp(nface, 'iso'))
+    [elem, node] = isosurface(img, 0.5);
+    node = node(:, [2, 1, 3]) - 0.5;
+    return
+end
 
 dim = size(img);
 if (length(dim) < 3)
@@ -55,7 +63,7 @@ id2 = sub2ind(newdim, jx, jy);
 id3 = sub2ind(newdim, kx, ky);
 
 if (nargin == 2 && nface == 0)
-    elem = [id1 id2 id3];
+    elem = [id1; id2; id3];
     node = zeros(newdim);
     node(elem) = 1;
     node = node(2:end - 1, 2:end - 1, 2:end - 1) - 1;
@@ -65,7 +73,7 @@ end
 % populate all the triangles
 xy = newdim(1) * newdim(2);
 
-if (nargin == 1 || nface == 3)  % create triangular elements
+if (nargin == 1 || abs(nface) == 3)  % create triangular elements
     elem = [id1 id1 + newdim(1) id1 + newdim(1) + xy; id1 id1 + newdim(1) + xy id1 + xy];
     elem = [elem; id2 id2 + 1 id2 + 1 + xy; id2 id2 + 1 + xy id2 + xy];
     elem = [elem; id3 id3 + 1 id3 + 1 + newdim(1); id3 id3 + 1 + newdim(1) id3 + newdim(1)];

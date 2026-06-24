@@ -1,4 +1,4 @@
-classdef dMesh
+classdef dMesh < matlab.mixin.Copyable
     % DOGPUP mesh class
 
     properties (Access = public)
@@ -9,19 +9,14 @@ classdef dMesh
         face % mesh face triangle elements
         area % mesh triangle areas
         bnd % binary boundary marker
-        gradScale % scaling matrix for gradient basis functions
 
         % MESH PROPERTIES
         nr % global refractive index
-        c % speed of light in media
+        c % speed of light in media mms^-1
         mua % absorption coeff mm^-1
         musp % reduced scattering coeff mm^-1
         kappa % diffusion coeff mm
         R % boundary factor
-
-        % Matrices for FEM
-        K % diffusion matrix
-        M % mass matrix
 
         % Optodes
         optode % DOGPUP optode class handle
@@ -39,59 +34,62 @@ classdef dMesh
     end
 
     properties (Constant)
-        cVac = 2.99792458e11; % speed of light in vaccum (mms^-1)
+        cVac = 2.99792458e11; % speed of light in vaccum mms^-1
     end
     
     methods 
-        %% Mesh Setup
+        %% Mesh Setup/Utils
         % Construct an instance of this class
-        function mesh = dMesh(node,elem,nr,props)
+        function mesh = dMesh(varargin)
             % Construct DOGPUP mesh from given mesh geometry and optical
             % properties
 
             % INPUT
-            % node = node locations [NN x 3] (mm)
-            % elem = mesh connectivity list [NE x 4]
-            % nr = refractive index of mesh [scalar]
-            % props = optical properties of mesh [mua musp], either [1 x 2] or [NN x 2]
+            % varargin{1} = nodes [NN x 3] or path to mesh json
+            % varargin{2} = mesh connectivity list [NE x 4]
+            % varargin{3} = refractive index of mesh [scalar]
+            % varargin{4} = optical properties of mesh [mua musp], either [1 x 2] or [NN x 2]
 
             % mua = absoprtion (mm^-1), musp = reduced scattering (mm^-1)
+            % NN = number of nodes, NE = number of elements, 
 
             % OUTPUT
             % mesh = DOGPUP mesh class
 
-            % NN = number of nodes, NE = number of elements, 
-
-            mesh.node = node;
-            mesh.elem = elem;
-            mesh.nr = nr;
-            mesh.mua = props(:,1);
-            mesh.musp = props(:,2);
-            if size(props,1) == 1
-                mesh.mua = ones(size(node,1),1).*mesh.mua;
-                mesh.musp = ones(size(node,1),1).*mesh.musp;
+            if nargin == 1
+                mesh = load_mesh(varargin{1});
+            else
+                mesh.node = varargin{1};
+                mesh.elem = varargin{2};
+                mesh.nr = varargin{3};
+                mesh = prepare_mesh(mesh); % prepare geometry
+                mesh.update_properties(varargin{4}) % fill optical props
             end
-            mesh.kappa = 1./(3.*(mesh.mua + mesh.musp));
-            mesh = prepare_mesh(mesh); % prepare geometry
-            mesh = update_properties(mesh); % generate forward matrix
         end
 
-        % update optical properties and generate forward matrix
-        function mesh = update_properties(mesh,props)
-            % Generates forward matrix for FEM solution of fluence
-            if nargin > 1
-                mesh.mua(:)= props(:,1);
-                mesh.musp(:) = props(:,2);
-                mesh.kappa(:) = 1./(3.*(mesh.mua + mesh.musp));
-            end
-            [mesh.K,mesh.M] = gen_fwdmat(mesh);
+        % Update optical properties
+        function update_properties(mesh,props)
+            % Asigns optical properties at each node of the mesh
+
+                if isempty(props)
+                    mesh.mua = [];
+                    mesh.musp = [];
+                    mesh.kappa = [];
+                else
+                    mesh.mua = zeros([size(mesh.node,1),1]);
+                    mesh.musp = zeros([size(mesh.node,1),1]);
+                    mesh.kappa = zeros([size(mesh.node,1),1]);
+                    mesh.mua(:) = props(:,1);
+                    mesh.musp(:) = props(:,2);
+                    mesh.kappa(:) = 1./(3.*(mesh.mua + mesh.musp));
+                end
         end
 
         % link optode class to mesh class
-        function mesh = add_optode(mesh,optode)
+        function add_optode(mesh,optode)
             % snaps optodes to nearest surface of the mesh and links the
             % two objects
-            optode = snap2mesh(optode,mesh);
+            optode.snap2mesh(mesh);
             mesh.optode = optode;
         end
         
@@ -101,9 +99,67 @@ classdef dMesh
             mesh.optode = [];
         end
     
+        % save mesh as json
+        function save_mesh(mesh,fn,overwrite_flag)
+            % save DOGPUP mesh as json
+            
+            % mesh = DOGPUP mesh object
+            % fn = string or character filename to be written
+
+            if ~isletter(fn)
+                error('fn must be a string or character')
+            end
+
+            % check if file exists
+            fn = string(fn);
+            [fpath,fn,~] = fileparts(fn);
+            if nargin > 2 && strcmp(string(overwrite_flag),'overwrite')
+                fn = fn;
+            elseif nargin > 2 && ~isletter(overwrite_flag)
+                error('overwrite_flag must be string or char')
+            elseif nargin < 3 || ~strcmp(string(overwrite_flag),'overwrite')
+                if nargin > 2 && ~strcmp(string(overwrite_flag),'overwrite')
+                    warning('Invalid overwrite_flag must be string ''overwrite'', writing to new file')
+                end
+                listing = dir(fpath + "\" + fn + "*.json");
+                if ~isempty(listing)
+                    fn = fn + "(" + num2str(length(listing)) + ")";
+                end
+            end
+            fn = fpath + "\" + fn + ".json";
+
+            % mesh geometry
+            structOut.geometry.nodes = mesh.node;
+            structOut.geometry.elements = mesh.elem;
+            structOut.parameters.refractiveIndex = mesh.nr;
+            structOut.parameters.opticalProps = [mesh.mua mesh.musp];
+            % mesh optode
+            structOut.optode.source.position = [mesh.optode.s_positions mesh.optode.s_bary];
+            structOut.optode.source.direction = mesh.optode.s_dirs;
+            structOut.optode.detector.position = [mesh.optode.d_positions mesh.optode.d_bary];
+            structOut.optode.detector.direction = mesh.optode.d_dirs;
+            structOut.optode.link = mesh.optode.link;
+            if size(mesh.optode.ch_tirf,1) == length(mesh.optode.tAxis(:))
+                structOut.optode.timeData = [mesh.optode.tAxis(:) mesh.optode.ch_tirf];
+            else
+                structOut.optode.timeData = [mesh.optode.tAxis(:) mesh.optode.ch_tirf.'];
+            end
+            if size(mesh.optode.ch_firf,1) == length(mesh.optode.fAxis(:))
+                structOut.optode.freqData = [mesh.optode.fAxis(:) mesh.optode.ch_firf];
+            else
+                structOut.optode.freqData = [mesh.optode.fAxis(:) mesh.optode.ch_firf.'];
+            end
+
+            json = savejson('DOGPUP_mesh',structOut);
+            fid = fopen(fn,'w');
+            fprintf(fid, '%s', json);
+            fclose(fid);
+        end
+
+        
         %% Fluence solving methods
         % solves for forward fluence using BICGSTAB and FSAI preconditioning
-        function [phi,data] = flu_solve(mesh,displayFlag)
+        function [phi,data] = get_fluence(mesh,displayFlag)
             % Finds FEM solution for fluence and data at detectors
 
             % INPUT
@@ -118,7 +174,7 @@ classdef dMesh
             % NS = number of sources, NM = number of measurements
 
             if nargin < 2
-                displayFlag = 1;
+                displayFlag = true;
             end
 
             % generate source vectors
@@ -134,14 +190,14 @@ classdef dMesh
 
             % get detector data
             if nargout > 1
-                data = meas_flu(mesh,phi);
+                data = mesh.get_detections(phi);
                 tdisp('detection generated!\n',displayFlag)
             end
 
         end
 
         % gets data from detectors
-        function data = meas_flu(mesh,phi)
+        function data = get_detections(mesh,phi)
             % Finds fluence at detectors
             
             % INPUT
@@ -173,7 +229,7 @@ classdef dMesh
         end
         
         % solves for adjoint fluence using BICGSTAB and FSAI preconditioning
-        function phiA = adj_flu_solve(mesh,displayFlag)
+        function phiA = get_adjoint(mesh,displayFlag)
             % Finds FEM solution for adjoint fluence
 
             % INPUT
@@ -203,7 +259,6 @@ classdef dMesh
 
         end
 
-        %% Inverse probelm methods
         % generates complex FD jacobian
         function [J,data,phi,phiA] = J_complex(mesh,phi,phiA,type,displayFlag)
             % Finds the Fourier series coefficient absorption Jacobian 
@@ -234,12 +289,14 @@ classdef dMesh
             
             if nargin < 3 || isempty(phiA)
                 % generate adjoint fluence if not given
-                phiA = adj_flu_solve(mesh,displayFlag);
+                phiA = get_adjoint(mesh,displayFlag);
                 if nargin < 2 || isempty(phi)
                     % generate forward fluence if not given
-                    [phi,data] = flu_solve(mesh,displayFlag);
+                    phi = get_fluence(mesh,displayFlag);
                 end
             end
+
+            data = get_detections(mesh,phi);
             
             tdisp('\ngenerating complex absorption jacobian...',displayFlag)
             % interpolate fluences to grid
@@ -270,45 +327,10 @@ classdef dMesh
             J = J.*mesh.optode.ch_firf; % convolve with channel IRF
         end
 
-        % Form array of target spots
-        function target = target_spots(mesh,pos,w,type)
-            % Get array of sensitivity spots to form when weighting J
-            
-            % INPUT
-            % mesh = fully initialised DOGPUP mesh
-            % pos = barycentre of spots [NS x 3] (mm)
-            % w = width of spot either FWHM ('gauss') or true width ('square)
-            % type = 'gauss' or 'square' string, determines it spot is
-            % square pixel or gaussian
-
-            % OUTPUT
-            % target = array of sensitivity spots (NS x NV)
-
-            % NS = number of spots, NV = number of voxels
-
-            pos = pos.';
-            if strcmp(type,'gauss')
-                s = (2*sqrt(2*log(2)))*w;
-                target = exp(-(mesh.grid(:,1)-pos(1,:)).^2./(s^2.*2)...
-                    -(mesh.grid(:,2)-pos(2,:)).^2./(s^2.*2)...
-                    -(mesh.grid(:,3)-pos(3,:)).^2./(s^2.*2));
-            elseif strcmp(type,'square')
-                w = w/2;
-                target = double(mesh.grid(:,1) <= (pos(1,:) + w) & mesh.grid(:,1) >= (pos(1,:) - w)...
-                    & mesh.grid(:,2) <= (pos(2,:) + w) & mesh.grid(:,2) >= (pos(2,:) - w)...
-                    & mesh.grid(:,3) <= (pos(3,:) + w) & mesh.grid(:,3) >= (pos(3,:) - w));
-            else 
-                error('Check spot type is gauss or square')
-            end
-            target = target./sum(target,1);
-            target = -(target).';
-            % target(:,~mesh.gridinmesh) = 0;
-            target = target(:,mesh.gridinmesh);
-        end
 
         %% Slicing and interpolation methods
         % Grid interpolation for reconstruction basis
-        function mesh = mesh2grid(mesh,x,y,z)
+        function mesh2grid(mesh,x,y,z)
         % Generates transformation matrices for interpolation to voxel
         % grid and vice versa
 
@@ -325,6 +347,9 @@ classdef dMesh
         % mesh.gridinmesh = binary flag, true if voxel is inside mesh [NV x 1]
 
         % NV = number of voxels, NN = number of nodes
+
+        % reset grid
+        mesh.reset_grid;
         
         % assumes cubic grid
 
@@ -332,6 +357,8 @@ classdef dMesh
         dx = abs(x(2) - x(1));
         [X,Y,Z] = ndgrid(x,y,z);
         mesh.grid = [X(:),Y(:),Z(:)];
+        mesh.gridSize = [length(x), length(y), length(z)];
+        mesh.dxyz = dx;
         
         %% Calculate mesh to grid transform matrix
         % find barycentric co-ords of each voxelised point w.r.t mesh
@@ -349,15 +376,44 @@ classdef dMesh
         v = bary(mesh.gridinmesh,:).';
         v = v(:);
         
+        % construct mesh to grid interpolation matrix
         mesh.m2g = sparse(i,j,v,sum(mesh.gridinmesh),size(mesh.node,1));
-        clearvars i j v
         
         %% Calculate grid to mesh transform matrix
         % find barycentric co-ords of each node w.r.t voxel grid
-        elemG = delaunay(mesh.grid(mesh.gridinmesh,:));
-        TR = triangulation(elemG,mesh.grid(mesh.gridinmesh,:));
-        [idInt,bary] = pointLocation(TR,mesh.node);
-        meshingrid = logical(~isnan(idInt));
+        % create reference triangulation of 8 voxels
+        origin = mesh.grid(1,:);
+        [X,Y,Z] = ndgrid([0 dx]);
+        node_vox0 = [X(:),Y(:),Z(:)];
+        elem_vox0 = delaunay(node_vox0);
+        % rescale mesh nodes such that their co-ords are relative to this
+        % reference
+        origin_rel = floor((mesh.node - origin) / dx);
+        node_rel = mesh.node - (origin_rel.*dx + origin);
+        node_rel(abs(node_rel)<1e-14) = 0;
+        % find barycentric co-ords in the reference voxel
+        TR = triangulation(elem_vox0,node_vox0);
+        [ind,bary] = pointLocation(TR,node_rel);
+        % convert to real voxel
+
+        % find global index of each nodes voxel origin
+        origin_idx = origin_rel + 1;
+        % handle nodes outside grid span
+        idx = any(origin_idx < 1,2) | any(origin_idx > mesh.gridSize,2);
+        if sum(idx) > 0
+            origin_idx(idx,:) = ones(sum(idx),3);
+        end
+        origin_idx = sub2ind(mesh.gridSize,origin_idx(:,1),origin_idx(:,2),origin_idx(:,3));
+
+        % offset voxel origin idx
+        rel_idx = node_vox0(:,1)./dx + mesh.gridSize(:,1).*(node_vox0(:,2)./dx) + prod(mesh.gridSize(:,1:2)).*(node_vox0(:,3)./dx);
+        true_idx = origin_idx + rel_idx(elem_vox0(ind,:));
+        true_idx(idx,:) = ones(sum(idx),4).*find(~mesh.gridinmesh,1);
+        true_idx(true_idx > numel(mesh.gridinmesh)) = find(~mesh.gridinmesh,1);
+        mask = mesh.gridinmesh(true_idx);
+        % tag mesh nodes with voxel vertices in grid (where grid is now defined as voxels in orignal mesh)
+        meshingrid = any(mask>0,2);
+        bary = mask.*bary;
         
         % use barycentric co-ords to form interpolation matrix
         % removes weighting from voxel points outside mesh
@@ -366,11 +422,17 @@ classdef dMesh
         i = i(meshingrid).';
         i = repelem(i,4,1);
         
-        j = double(elemG(idInt(meshingrid),:)).';
+        j = true_idx(meshingrid,:).';
         j = j(:);
+        LUT_j = cumsum(mesh.gridinmesh);
+        j = LUT_j(j);
         
         bary = bary(meshingrid,:).';
         v = bary(:);
+
+        i = i(j>0);
+        v = v(j>0);
+        j = j(j>0);
         
         % find nodes that are outside voxel grid
         if sum(meshingrid) < size(mesh.node,1)
@@ -379,7 +441,7 @@ classdef dMesh
             idx = ~meshingrid;
             iS = 1:size(mesh.node,1);
             iS = iS(idx).';
-            jS = nearestNeighbor(TR,mesh.node(idx,:));
+            jS = dsearchn(mesh.grid(mesh.gridinmesh,:),mesh.node(idx,:));
             vS = ones(length(iS),1);
             
             i = [i; iS];
@@ -388,21 +450,30 @@ classdef dMesh
         
         end
         
+        % construct grid to mesh interpolation matrix
         mesh.g2m = sparse(i,j,v,size(mesh.node,1),sum(mesh.gridinmesh));
         norm = sum(mesh.g2m,2);
         norm(norm==0) = 1;
         mesh.g2m = mesh.g2m./norm;
-        clearvars i j v iS jS vS norm
-        
-        mesh.gridSize = [length(x), length(y), length(z)];
-        mesh.dxyz = dx;
         
         
         end
 
-        % Generate derivative matrices for grid
-        function [Dx,Dy,Dz] = grid_grad(mesh)
+        % reset grid properties
+        function reset_grid(mesh)
+        % resets grid co-ords and interpolation matrices
+            mesh.grid = [];
+            mesh.gridSize = [];
+            mesh.dxyz = [];
+            mesh.m2g = [];
+            mesh.g2m = [];
+            mesh.gridinmesh = [];
 
+        end
+
+        % generatie derivative matrices
+        function [Dx,Dy,Dz] = grid_grad(mesh)
+        % Generate derivative matrices for grid
             % sizes
             N_x = mesh.gridSize(1);
             N_y = mesh.gridSize(2);
@@ -471,10 +542,6 @@ classdef dMesh
                 v_s(isinf(v_s)) = 0;
                 v_s = repelem(v_s,1,6);
 
-                % i = unique(i);
-                % j = i;
-                % v = ones(size(i));
-
                 I_mat = sparse(i_s(j_s>0),j_s(j_s>0),v_s(j_s>0),N,N) + speye(N);
                 D = I_mat*D;
                 
@@ -498,7 +565,7 @@ classdef dMesh
 
         % function to interpolate values to different mesh
         function val_int = mesh2mesh(mesh,val,old_node,old_elem)
-            % interplotes values between two mesh
+            % interplotes values between two meshes
 
             % INPUT
             % mesh = target DOGPUP mesh
@@ -527,7 +594,7 @@ classdef dMesh
 
         end
         
-        % function to slice mesh to grid for display forms 256 x 256 image
+        % function to slice mesh to grid for display forms 512 x 512 image
         function [sliceMat,points,plane] = mesh_slice(mesh,plane)
             % generates matrix transform to find slice of function defined
             % on mesh
@@ -538,8 +605,8 @@ classdef dMesh
             % 'z=plane', determines slicing plance
 
             % OUTPUT
-            % sliceMat = matrix to interpolate at slice [256*256 x NN]
-            % points = (x,y,z) points on slice [256*256 x 3]
+            % sliceMat = matrix to interpolate at slice [512*512 x NN]
+            % points = (x,y,z) points on slice [512*512 x 3]
 
             % NN = number of nodes
             
@@ -555,17 +622,16 @@ classdef dMesh
                 error('Format for slicing plane is similar to ''x=30''')
             end
 
-            res = 256;
-
-            [minPos,maxPos] = bounds(mesh.node,'all');
-            x = linspace(minPos,maxPos,res);
+            res = 512;
+            dx = max(abs(max(mesh.node) - min(mesh.node)))./(res-2);
+            x = linspace(-dx*(res/2),dx*(res/2),res);
             
             if strcmp(plane(1:2),'x=')
-                [X,Y,Z] = meshgrid(str2double(extractAfter(plane,'=')),x,x);
+                [X,Y,Z] = meshgrid(str2double(extractAfter(plane,'=')),mean(mesh.node(:,2)) + x, mean(mesh.node(:,3)) + x);
             elseif strcmpi(plane(1:2),'y=')
-                [X,Y,Z] = meshgrid(x,str2double(extractAfter(plane,'=')),x);
+                [X,Y,Z] = meshgrid(mean(mesh.node(:,1)) + x,str2double(extractAfter(plane,'=')),mean(mesh.node(:,3)) + x);
             elseif strcmpi(plane(1:2),'z=')
-                [X,Y,Z] = meshgrid(x,x,str2double(extractAfter(plane,'=')));
+                [X,Y,Z] = meshgrid(mean(mesh.node(:,1)) + x,mean(mesh.node(:,2)) + x,str2double(extractAfter(plane,'=')));
             end
             
             points = [X(:),Y(:),Z(:)];
@@ -594,28 +660,25 @@ classdef dMesh
 
         end
 
-        % function to interpolate mesh to 3D grid for display forms 64 x 64 x 64
+        % function to interpolate mesh to 3D grid for display forms 128 x 128 x 128
         % volume
         function [volMat,points] = mesh_slice3(mesh)
-            % generates matrix transform to convert data to 64 x 64 x 64
+            % generates matrix transform to convert data to 128 x 128 x 128
             % grid for display purposes
 
             % INPUT
             % mesh = DOGPUP mesh
 
             % OUTPUT
-            % volMat = matrix to interpolate to grid [64*64*64 x NN]
-            % points = (x,y,z) points in volume [64*64*64 x 3]
+            % volMat = matrix to interpolate to grid [128*128*128 x NN]
+            % points = (x,y,z) points in volume [128*128*128 x 3]
 
             % NN = number of nodes
             
-            res = 64;
-
-            [minPos,maxPos] = bounds(mesh.node,'all');
-            x = linspace(minPos,maxPos,res-2);
-            dx = x(2) - x(1);
-            x = cat(2,x(1)-dx,x,x(end)+dx);
-            [X,Y,Z] = meshgrid(x,x,x);
+            res = 128;
+            dx = max(abs(max(mesh.node) - min(mesh.node)))./(res-2);
+            x = linspace(-dx*(res/2),dx*(res/2),res);
+            [X,Y,Z] = meshgrid(mean(mesh.node(:,1)) + x,mean(mesh.node(:,2)) + x, mean(mesh.node(:,3)) + x);
             
             points = [X(:),Y(:),Z(:)];
 
@@ -652,7 +715,7 @@ classdef dMesh
             len = (1.2*maxPos - 1.2*minPos)/2;
             c0 = mean(mesh.node,1);
             % plot
-            p0 = trimesh(mesh.face,mesh.node(:,3),mesh.node(:,1),mesh.node(:,2),'EdgeColor',[0.65 0.65 0.65],'FaceColor',[0.8 0.8 0.8],'FaceAlpha',alpha,'EdgeAlpha',alpha);
+            p0 = trimesh(mesh.face,mesh.node(:,3),mesh.node(:,1),mesh.node(:,2),'EdgeColor',[0.65 0.65 0.65],'FaceColor',[0.8 0.8 0.8],'FaceAlpha',alpha,'EdgeAlpha',alpha/3);
             xlim(c0(3) + [-len len])
             xlim(c0(1) + [-len len])
             xlim(c0(2) + [-len len])
@@ -671,10 +734,9 @@ classdef dMesh
             xlabel('z (mm)')
             ylabel('x (mm)')
             zlabel('y (mm)')
-            set(gca,'XDir','normal','YDir','reverse','ZDir','normal')
+            set(gca,'XDir','normal','YDir','normal','ZDir','normal')
             view(-45,45)
             axis equal
-            drawnow
         end
         
         % plot surface with optodes
@@ -688,23 +750,38 @@ classdef dMesh
             % lbl_flag = boolean flag to show optode numbering, default
             % true
 
-            % plot
+            if  nargin == 1 || isempty(alpha)
+                alpha = 1;
+            end
+            
+            if alpha > 0
+                plotdmesh(mesh,alpha)
+            end
             hold on
-            plotdmesh(mesh,alpha)
             p1 = scatter3(mesh.optode.s_positions(:,3),mesh.optode.s_positions(:,1),mesh.optode.s_positions(:,2),20,'r','filled');
             p2 = scatter3(mesh.optode.d_positions(:,3),mesh.optode.d_positions(:,1),mesh.optode.d_positions(:,2),20,'b','filled');
 
             if nargin < 3 || lbl_flag == true
                 % number sources and detectors
-                stxt = strsplit(num2str(1:size(mesh.optode.s_dirs,1))); % source labels
+                stxt = strsplit(num2str(1:size(mesh.optode.s_positions,1))); % source labels
                 dr = -3.*mesh.optode.s_dirs;
                 txtPos = mesh.optode.s_positions;
-                text(txtPos(:,3)+dr(:,3),txtPos(:,1)+dr(:,1),txtPos(:,2)+dr(:,2),stxt,'Color','red')
+                if ~isempty(dr)
+                    txtPos = txtPos + dr;
+                else
+                    txtPos = txtPos + [1 1 1];
+                end
+                text(txtPos(:,3),txtPos(:,1),txtPos(:,2),stxt,'Color','red')
     
-                dtxt = strsplit(num2str(1:size(mesh.optode.d_dirs,1)));
+                dtxt = strsplit(num2str(1:size(mesh.optode.d_positions,1)));
                 dr = -3.*mesh.optode.d_dirs;
                 txtPos = mesh.optode.d_positions;
-                text(txtPos(:,3)+dr(:,3),txtPos(:,1)+dr(:,1),txtPos(:,2)+dr(:,2),dtxt,'Color','blue')
+                if ~isempty(dr)
+                    txtPos = txtPos + dr;
+                else
+                    txtPos = txtPos + [1 1 1];
+                end
+                text(txtPos(:,3),txtPos(:,1),txtPos(:,2),dtxt,'Color','blue')
             end
 
             % Format datatip
@@ -731,18 +808,87 @@ classdef dMesh
             xlabel('z (mm)')
             ylabel('x (mm)')
             zlabel('y (mm)')
-            set(gca,'XDir','normal','YDir','reverse','ZDir','normal')
+            set(gca,'XDir','normal','YDir','normal','ZDir','normal')
             view(-45,45)
             daspect([1 1 1])
-            drawnow
 
         end
     
-        % plot slice through mesh, interpoalted to 128 x 128 grid
+        % plot slice through mesh
         function plotfun_slice(mesh,fun,map,plane,incl)
-            % Plots 2D slice of function defined on mesh
+            % Plots 2D slice of function defined on mesh or grid
+            
+            % INPUT
+            % mesh = DOGPUP mesh
+            % fun = function defined on mesh [NN/NG x 1]
+            % map = matlab colormap
+            % plane = string that is formated 'x=plane', 'y=plane' or
+            % 'z=plane', determines slicing plance
+            % incl = inclusion array [NI X (x,y,z) radius]
 
-            % plots surface mesh with face transparency given by alpha
+            % NN = number of nodes, NG = number of grid points ,NI = number of inclusions
+
+            if length(fun) == size(mesh.node,1)
+                plotfun_slice_mesh(mesh,fun,map,plane)
+            elseif length(fun) == size(mesh.m2g,1)
+                plotfun_slice_grid(mesh,fun,map,plane)
+            else
+                error('Plotting function length must match number of nodes or voxels')
+            end
+            
+            % plot inclusion ground truth outline
+            if  nargin > 4
+                r = incl(:,4);
+                c0 = incl(:,1:3);
+                sl0 = eval(extractAfter(plane,'='));
+                cc = colororder;
+                cc = cc(1,:);
+                if strcmp(plane(1:2),'x=')
+                    for i = 1:length(r)
+                        circle_r2 = r(i)^2 - (sl0 - c0(i,1)).^2;
+                        if circle_r2 < 0
+                            continue
+                        end
+                        circle_r = sqrt(circle_r2);
+                        theta = linspace(0, 2*pi, 100);
+                        y = c0(i,2) + circle_r.*cos(theta);
+                        z = c0(i,3) + circle_r.*sin(theta);
+                        hold on
+                        plot(z,y,'LineWidth',1.5,'Color',cc)               
+                    end
+                elseif strcmp(plane(1:2),'y=')
+                    for i = 1:length(r)
+                        circle_r2 = r(i)^2 - (sl0 - c0(i,2)).^2;
+                        if circle_r2 < 0
+                            continue
+                        end
+                        circle_r = sqrt(circle_r2);
+                        theta = linspace(0, 2*pi, 100);
+                        x = c0(i,1) + circle_r.*cos(theta);
+                        z = c0(i,3) + circle_r.*sin(theta);
+                        hold on
+                        plot(x,z,'LineWidth',1.5,'Color',cc)
+                    end
+                elseif strcmp(plane(1:2),'z=')
+                    for i = 1:length(r)
+                        circle_r2 = r(i)^2 - (sl0 - c0(i,3)).^2;
+                        if circle_r2 < 0
+                            continue
+                        end
+                        circle_r = sqrt(circle_r2);
+                        theta = linspace(0, 2*pi, 100);
+                        x = c0(i,1) + circle_r.*cos(theta);
+                        y = c0(i,2) + circle_r.*sin(theta);
+                        hold on
+                        plot(x,y,'LineWidth',1.5,'Color',cc)
+                    end
+                end
+            end
+        end
+
+        % plot slice through mesh, interpoalted to 256 x 256 grid
+        function plotfun_slice_mesh(mesh,fun,map,plane)
+            % Plots 2D slice of function defined on mesh
 
             % INPUT
             % mesh = DOGPUP mesh
@@ -757,16 +903,9 @@ classdef dMesh
             % slice function on plane
             [sliceMat,points,plane] = mesh_slice(mesh,plane);
             fun = sliceMat*fun;
-
-            % plot inclusion stats
-            if nargin > 4
-                r = incl(:,4);
-                c0 = incl(:,1:3);
-            end
             
-            res = 256;
+            res = 512;
             cc = colororder;
-            cc = cc(1,:);
 
             if strcmp(plane(1:2),'x=')
                 % plot sliced plane
@@ -789,23 +928,6 @@ classdef dMesh
                 xlim([floor(min(mesh.node(:,3))) ceil(max(mesh.node(:,3)))])
                 ylim([floor(min(mesh.node(:,2))) ceil(max(mesh.node(:,2)))])
 
-                % plot inclusion ground truth
-                if  nargin > 4
-                    for i = 1:length(r)
-                        circle_r2 = r(i)^2 - (points(1,1) - c0(i,1)).^2;
-                        if circle_r2 < 0
-                            continue
-                        end
-                        circle_r = sqrt(circle_r2);
-                        theta = linspace(0, 2*pi, 100);
-                        y = c0(i,2) + circle_r.*cos(theta);
-                        z = c0(i,3) + circle_r.*sin(theta);
-                        hold on
-                        plot(z,y,'LineWidth',1.5,'Color',cc)
-                        hold off
-                    end
-                end
-
             elseif strcmpi(plane(1:2),'y=')
                 % plot sliced plane
                 x = reshape(points(:,1),res,res);
@@ -827,29 +949,12 @@ classdef dMesh
                 xlim([floor(min(mesh.node(:,1))) ceil(max(mesh.node(:,1)))])
                 ylim([floor(min(mesh.node(:,3))) ceil(max(mesh.node(:,3)))])
 
-                % plot inclusion ground truth
-                if  nargin > 4
-                    for i = 1:length(r)
-                        circle_r2 = r(i)^2 - (points(1,2) - c0(i,2)).^2;
-                        if circle_r2 < 0
-                            continue
-                        end
-                        circle_r = sqrt(circle_r2);
-                        theta = linspace(0, 2*pi, 100);
-                        x = c0(i,1) + circle_r.*cos(theta);
-                        z = c0(i,3) + circle_r.*sin(theta);
-                        hold on
-                        plot(x,z,'LineWidth',1.5,'Color',cc)
-                        hold off
-                    end
-                end
-
             elseif strcmpi(plane(1:2),'z=')
                 % plot sliced plane
                 x = reshape(points(:,1),res,res);
                 y = reshape(points(:,2),res,res);
                 fun = reshape(fun,res,res);
-                im = imagesc([y(1) y(end)],[x(1) x(end)],fun);
+                im = imagesc([x(1) x(end)],[y(1) y(end)],fun);
                 set(im, 'AlphaData', ~isnan(fun))
                 set(gca,'YDir','normal')
                 % view(0,270)
@@ -865,35 +970,17 @@ classdef dMesh
                 delete(mytip);
                 xlim([floor(min(mesh.node(:,1))) ceil(max(mesh.node(:,1)))])
                 ylim([floor(min(mesh.node(:,2))) ceil(max(mesh.node(:,2)))])
-
-                % plot inclusion ground truth
-                if  nargin > 4
-                    for i = 1:length(r)
-                        circle_r2 = r(i)^2 - (points(1,3) - c0(i,3)).^2;
-                        if circle_r2 < 0
-                            continue
-                        end
-                        circle_r = sqrt(circle_r2);
-                        theta = linspace(0, 2*pi, 100);
-                        x = c0(i,1) + circle_r.*cos(theta);
-                        y = c0(i,2) + circle_r.*sin(theta);
-                        hold on
-                        plot(x,y,'LineWidth',1.5,'Color',cc)
-                        hold off
-                    end
-                end
             end
 
             colormap(gca,map)
             clim([min(fun(:)) max(fun(:))])
             set(gca,'Color',[0.9 0.9 0.9])
             daspect([1 1 1])
-            drawnow
 
         end
     
         % plot slice through reconstruction basis, no interpolation
-        function plotfun_grid(mesh,fun,map,plane)
+        function plotfun_slice_grid(mesh,fun,map,plane)
             % plots slice through function defined on voxel grid
             % see plotfun_slice
             
@@ -977,7 +1064,6 @@ classdef dMesh
             colormap(gca,map)
             set(gca,'Color',[0.9 0.9 0.9])
             daspect([1 1 1])
-            drawnow
 
         end
         
@@ -1036,8 +1122,78 @@ classdef dMesh
 
         end
         
+        % plot function on 3D mesh
+        function plotfun_3d(mesh,fun,map,alpha,selector)
+            nodes = mesh.node;
+            elems = mesh.elem;
+            if nargin > 4
+                if ~isletter(selector)  
+                    error('Selector must be string or char')
+                elseif (isempty(regexp(selector, '[x-zX-Z]', 'once')) && isempty(regexp(selector, '[><=&|]', 'once')))
+                    error('Invalid selector expression')
+                end
+                
+                % xyz location of element centre of masses
+                x = mean(reshape(nodes(elems.',1),4,[]),1);
+                y = mean(reshape(nodes(elems.',2),4,[]),1);
+                z = mean(reshape(nodes(elems.',3),4,[]),1);
+                % evaluate locations of elements
+                selector = lower(string(selector));
+                idx = eval(selector);
+                % new boundary faces
+                faces = [mesh.elem(idx,[1,2,3]);...
+                        mesh.elem(idx,[1,2,4]);...
+                        mesh.elem(idx,[1,3,4]);...
+                        mesh.elem(idx,[2,3,4])];
+                % indexes for unique values
+                [~,ix,jx]=unique(sort(faces,2),'rows');
+                % indexes faces that only appear once i.e are outward facing
+                vec = histc(jx,1:max(jx));
+                qx = vec == 1;
+                faces=faces(ix(qx),:); % connection vectors for surface faces
+
+            else
+                faces = mesh.face;
+            end
+
+            % plotting limits
+            [minPos,maxPos] = bounds(nodes(faces(:),:),'all');
+            len = (1.2*maxPos - 1.2*minPos)/2;
+            c0 = mean(nodes(faces(:),:),1);
+            % plot
+            p0 = trimesh(faces,mesh.node(:,3),mesh.node(:,1),mesh.node(:,2));
+            p0.EdgeAlpha = alpha/10;
+            p0.EdgeColor = 'flat';
+            p0.FaceAlpha = alpha;
+            p0.FaceVertexCData = fun;
+            p0.FaceColor = "interp";
+            xlim(c0(3) + [-len len])
+            xlim(c0(1) + [-len len])
+            xlim(c0(2) + [-len len])
+            colormap(map)
+
+            % Format datatip
+            mytip = datatip(p0);
+            txt1 = dataTipTextRow('X','YData');
+            txt2 = dataTipTextRow('Y','ZData');
+            txt3 = dataTipTextRow('Z','XData');
+            p0.DataTipTemplate.DataTipRows(1) = txt1;
+            p0.DataTipTemplate.DataTipRows(2) = txt2;
+            p0.DataTipTemplate.DataTipRows(3) = txt3;
+            delete(mytip);
+
+            % view, labels and scale
+            xlabel('z (mm)')
+            ylabel('x (mm)')
+            zlabel('y (mm)')
+            set(gca,'XDir','normal','YDir','normal','ZDir','normal')
+            view(-45,45)
+            axis equal
+
+        end
+
         % plot isosurface
-        function plotfun_vol(mesh,funGT,fun,clrs)
+        function plotfun_iso(mesh,funGT,fun,clrs)
             % plots dice thresholded isosurface of function defined on mesh
 
             % INPUT
@@ -1055,15 +1211,15 @@ classdef dMesh
 
             [sliceMat,points] = mesh_slice3(mesh);
             [points,idx] = sortrows([points(:,3),points(:,1),points(:,2)]);
-            Z = reshape(points(:,1),64,64,64);
-            X = reshape(points(:,2),64,64,64);
-            Y = reshape(points(:,3),64,64,64);
+            Z = reshape(points(:,1),128,128,128);
+            X = reshape(points(:,2),128,128,128);
+            Y = reshape(points(:,3),128,128,128);
             
             plotdmesh(mesh,0.1)
             hold on
             if nargin > 2 && ~isempty(fun)
                 fun = sliceMat*fun;
-                fun = reshape(fun(idx),64,64,64);
+                fun = reshape(fun(idx),128,128,128);
                 iso_thresh = 0.5.*(median(fun(fun>0),'all') + max(fun,[],'all'));
                 iso = isosurface(Z,X,Y,fun,iso_thresh);
                 p = patch(iso);
@@ -1072,13 +1228,12 @@ classdef dMesh
             end
             
             funGT = sliceMat*funGT;
-            funGT = reshape(funGT(idx),64,64,64);
+            funGT = reshape(funGT(idx),128,128,128);
             iso_thresh = 0.5.*(median(funGT(funGT>0),'all') + max(funGT,[],'all'));
             iso = isosurface(Z,X,Y,funGT,iso_thresh);
             p = patch(iso);
             set(p,'FaceColor',clrs(1,:),'FaceAlpha',0.4);
             set(p,'EdgeColor','none');
-            drawnow
             daspect([1 1 1])
             grid off
         end
@@ -1088,8 +1243,64 @@ end
 
 %% Functions to be called by class methods, not to be called directly
 
+% load json mesh
+function [mesh,optode] = load_mesh(fn)
+    
+    % fn = string or character filename to be read (must be json)
+
+    if ~isletter(fn)
+        error('fn must be a string or character')
+    end
+
+    [~,~,ext] = fileparts(fn);
+    if strcmp(ext,"json")
+        error('must be json file')
+    end
+
+    % load in json as structure
+    structIn = loadjson(fn);
+    structIn = structIn.DOGPUP_mesh;
+
+
+    % initialise mesh object
+    mesh = dMesh(structIn.geometry.nodes,...
+        structIn.geometry.elements,...
+        structIn.parameters.refractiveIndex,...
+        structIn.parameters.opticalProps);
+    % initialise optode object
+    optode = dOptode(structIn.optode.source.position(:,1:3),...
+        structIn.optode.detector.position(:,1:3),structIn.optode.link,[],[],[]);
+    optode.s_bary = structIn.optode.source.position(:,4:end);
+    optode.d_bary = structIn.optode.detector.position(:,4:end);
+
+    % update TD info
+    if ~isempty(structIn.optode.timeData)
+        t = structIn.optode.timeData(:,1).';
+        dt = t(2) - t(1);
+        irf = structIn.optode.timeData(:,2:end).';
+        optode.tAxis = t;
+        optode.dt = dt;
+        optode.ch_tirf = irf;
+    end
+
+    % update FD info
+    if ~isempty(structIn.optode.freqData)
+        f = structIn.optode.freqData(:,1).';
+        df = f(2) - f(1);
+        Nf = length(f);
+        irf = structIn.optode.freqData(:,2:end).';
+        optode.fAxis = f;
+        optode.df = df;
+        optode.Nf = Nf;
+        optode.ch_firf = irf;
+    end
+
+    mesh.optode = optode;
+
+end
+
+% Initialises geometric information such as finding boundary nodes etc.
 function mesh = prepare_mesh(mesh)
-    % Initialises geometric information such as finding boundary nodes etc.
     
     % Speed of light
     mesh.c = mesh.cVac./mesh.nr;
@@ -1126,7 +1337,7 @@ function mesh = prepare_mesh(mesh)
     mesh.bnd(idx) = 1;
     
     % ORIENT FACE ELEMENT NORMAL TO BE OUTWARD FACING AND CALCULATES AREA
-    % reorient face index
+    % reorient faces and repair
     [~,face] = meshcheckrepair(mesh.node,mesh.face,'deep');
     % map back to original indexing
     LUT = [unique(face) unique(mesh.face)];
@@ -1137,8 +1348,6 @@ function mesh = prepare_mesh(mesh)
     bVec = mesh.node(mesh.face(:,3),:)-mesh.node(mesh.face(:,1),:);
     normFace = cross(aVec,bVec,2);
     mesh.area = sqrt(sum(normFace.^2,2)).*0.5;
-
-    % Boundary conditions and stiffness mapping
     
     % FACTOR FOR BOUNDARY CONDITIONS
     % assumes medium-air boundary
@@ -1147,18 +1356,6 @@ function mesh = prepare_mesh(mesh)
     A = (2./(1-R0)-1+abs(cos(thetaC)).^3)./(1-abs(cos(thetaC)).^2);
     mesh.R = 1./(2.*A).*mesh.bnd;
     
-    % MAPPING FOR STIFFNESS MATRIX
-    % gradScale is used to map gradient from reference element to real element
-    idx = mesh.elem.';
-    idx = idx(:);
-    temp = mesh.node(idx,:).';
-    temp = reshape(temp,3,4,[]);
-    B = temp(:,2:end,:) - temp(:,1,:);
-    BT = pagetranspose(B);
-    invBT = pagemldivide(BT,eye(size(BT,1)));
-    invBT = reshape(invBT,9,[]);
-    mesh.gradScale = invBT.';
-    
     % Conversion to integers where needed
     mesh.elem = int32(mesh.elem);
     mesh.face = int32(mesh.face);
@@ -1166,7 +1363,7 @@ function mesh = prepare_mesh(mesh)
 
 end
 
-% generates forward matrices, stores only upper diagonal
+% generates forward matrices, constucts only upper diagonal
 function [K,M] = gen_fwdmat(mesh)
     % Generates upper diagonal of forward matrix components (K,M)
     
@@ -1174,8 +1371,8 @@ function [K,M] = gen_fwdmat(mesh)
     % MESH = DOGPUP dMesh Object
     
     % OUTPUT
-    % K = lower triangle of forward stiffness matrix, attenuation dependant component (n x n)
-    % M = lower triangle of forward mass matrix, for frequency dependent component (n x n)
+    % K = upper triangle of forward stiffness matrix, attenuation dependant component (n x n)
+    % M = upper triangle of forward mass matrix, for frequency dependent / complex component (n x n)
     
     % This version is based on theory from
     % Introduction to finite element methods, Hans Petter Langtangen
@@ -1184,306 +1381,149 @@ function [K,M] = gen_fwdmat(mesh)
     % A gentle introduction to the Finite Element Method, Francisco–Javier Sayas
     % https://team-pancho.github.io/documents/anIntro2FEM_2015.pdf
     % super useful resources
-    
-    % Reference Element stuff
-    % ref tet vertices (0,0,0), (1,0,0), (0,1,0), (0,0,1)
-    % ref triangle vertices (0,0), (1,0), (0,1)
-    % gauss-quadrature points and weights for reference tetrahedron
-    [x3a,y3a,z3a,w3t]=TetQuadDat('GPU');
-    % gauss-quadrature points and weights for reference triangle
-    [x2a,y2a,w2t]=TriQuadDat('GPU');
-    
-    % basis function value in reference tetra at quadrature points
-    N3D = [1-x3a-y3a-z3a; x3a; y3a; z3a;];
-    N3Dgrad = gpuArray([-1,-1,-1; 1,0,0; 0,1,0; 0,0,1]);
-    % basis functions in reference triangle at quadrature points
-    N2D = [1-x2a-y2a; x2a; y2a;];
-    
-    clearvars x3a y3a z3a x2a y2a
-    
-    % VOLUME INTEGRATION - Mass and Stiffnes
-    
-    % volumes of elements distributed along array pages
-    vol = reshape(mesh.vol,1,1,[]);
-    
-    % mapping to full mass+siffness matrix for each element matrix
-    idx = mesh.elem.';
+
+    % Gradient mapping to for stiffness matrix
+    idx = sort(mesh.elem,2).';
     idx = idx(:);
-    elemMapI = reshape(idx,4,1,[]);
-    elemMapI = repmat(elemMapI,1,size(mesh.elem,2),1);
-    elemMapJ = pagetranspose(elemMapI);
-    
-    % nodal values for each element distrubuted along array pages
-    kappa = gpuArray(reshape(mesh.kappa(idx),4,1,[]));
-    mua = gpuArray(reshape(mesh.mua(idx),4,1,[]));
-    % interpoalted to integration points for each element
-    kappa = pagemtimes(N3D.',kappa);
-    mua = pagemtimes(N3D.',mua);
-    % weighted for integration
-    kappa = pagefun(@times,w3t.',kappa);
-    mua = pagefun(@times,w3t.',mua);
-    
-    % stiffness transform to each element from reference
-    B = gpuArray(reshape(mesh.gradScale.',3,3,[]));
-    
-    % element matrix for each property
-    elemMatK = gpuArray(zeros(size(mesh.elem,2),size(mesh.elem,2),size(mesh.elem,1)));
-    elemMatM = elemMatK;
-    
-    [iloc,jloc] = ind2sub([size(mesh.elem,2),size(mesh.elem,2)],1:size(mesh.elem,2)^2);
-    
-    % generate element matrices for K and M
-    for n = 1:length(iloc)
-    
-        basisI = N3D(iloc(n),:).';
-        basisJ = N3D(jloc(n),:).';
-        gradI = pagemtimes(B,N3Dgrad(iloc(n),:).');
-        gradJ = pagemtimes(B,N3Dgrad(jloc(n),:).');
-    
-        % stiffness matrix
-        preFact = gradI.*gradJ;
-        preFact = sum(preFact,1);
-        preFact = pagefun(@times,vol,preFact);
-        stiff = pagefun(@times,preFact,sum(kappa,1));
-    
-        % absorption mass matrix
-        absrp = pagefun(@times,vol,sum(mua.*basisI.*basisJ,1));
-    
-        elemMatK(iloc(n),jloc(n),:) = stiff + absrp;
-    
-        % mass matrix
-        mass = pagefun(@times,vol,sum(w3t.'.*basisI.*basisJ,1));
-        elemMatM(iloc(n),jloc(n),:) = mass;
-    
-    end
-    
-    K = sparse(elemMapI(:),elemMapJ(:),gather(elemMatK(:)),size(mesh.node,1),size(mesh.node,1));
-    M = sparse(elemMapI(:),elemMapJ(:),gather(elemMatM(:)),size(mesh.node,1),size(mesh.node,1));
-    
-    % SURAFCE INTEGRATION
-
-    % first find boundary face elements
-    tempFace = sort(mesh.elem,2);
-    tempFace = gpuArray(tempFace.*mesh.bnd(tempFace));
-    % process tetrahedrons with all boundary nodes by splitting into component
-    % faces
-    mask = sum(sign(tempFace),2);
-    bFace = tempFace(mask==4,:);
-    bFace = cat(1,bFace(:,[1,2,3]),bFace(:,[1,2,4]),...
-        bFace(:,[1,3,4]),bFace(:,[2,3,4]));
-    % add remaining faces
-    tempFace = tempFace(mask==3,:);
-    tempFace = reshape(nonzeros(tempFace.'),3,[]).';
-    bFace = cat(1,bFace,tempFace);
-    
-    % find area of each face
-    aVec = mesh.node(bFace(:,2),:)-mesh.node(bFace(:,1),:);
-    bVec = mesh.node(bFace(:,3),:)-mesh.node(bFace(:,1),:);
-    normFace = cross(aVec,bVec,2);
-    area = sqrt(sum(normFace.^2,2)).*0.5;
-    
-    % areas of face elements distributed along array pages
-    area = reshape(area,1,1,[]);
-    
-    % mapping to full matrix for each element matrix
-    idx = bFace.';
-    idx = idx(:);
-    elemMapI = reshape(idx,3,1,[]);
-    elemMapI = repmat(elemMapI,1,size(bFace,2),1);
-    elemMapJ = pagetranspose(elemMapI);
-    
-    % nodal values for each element distrubuted along array pages
-    R = gpuArray(reshape(mesh.R(idx),3,1,[]));
-    % interpoalted to integration points for each element
-    R = pagemtimes(N2D.',R);
-    % weighted for integration
-    R = pagefun(@times,w2t.',R);
-    
-    elemMatK = gpuArray(zeros(size(bFace,2),size(bFace,2),size(bFace,1)));
-    
-    [iloc,jloc] = ind2sub([size(bFace,2),size(bFace,2)],1:size(bFace,2)^2);
-    
-    % generate element matrices for boundary integration
-    for n = 1:length(iloc)
-    
-        basisI = N2D(iloc(n),:).';
-        basisJ = N2D(jloc(n),:).';
-    
-        % boundary condition matrix
-        bound = pagefun(@times,area,sum(R.*basisI.*basisJ,1));
-        elemMatK(iloc(n),jloc(n),:) = bound;
-    
-    end
-    
-    K = K + sparse(elemMapI(:),elemMapJ(:),gather(elemMatK(:)),size(mesh.node,1),size(mesh.node,1));
-    
-    % clear GPU
-    clearvars -except K M
-    K = gather(K);
-    M = gather(M);
-    reset(gpuDevice);
-    % assume that matrices are symmetric so we can just store upper diagonal
-    K = triu(K);
-    M = triu(M);
-    
-    
-
-end
-
-% Tetrahedral quadrature
-function [xa,ya,za,wt]=TetQuadDat(type)
-% Quadrature data for tetrahedron
-% Refs
-%  P Keast, Moderate degree tetrahedral quadrature formulas, CMAME 55: 339-348 (1986)
-%  O. C. Zienkiewicz, The Finite Element Method,  Sixth Edition,
-% From https://people.sc.fsu.edu/~jburkardt/datasets/quadrature_rules_tet/quadrature_rules_tet.html
-
-    xa= [1/4, 1/2, 1/6, 1/6, 1/6];
-    ya= [1/4, 1/6, 1/6, 1/6,  1/2];
-    za= [1/4, 1/6, 1/6,  1/2, 1/6];
-    wt= [-0.8, 0.45, 0.45, 0.45, 0.45];
-    
-    if nargin > 0 && strcmp(type,'GPU') == 1
-        xa = gpuArray(xa);
-        ya = gpuArray(ya);
-        za = gpuArray(za);
-        wt = gpuArray(wt);
-    end
-
-end
-
-% Triangular quadrature
-function [xa,ya,wt] = TriQuadDat(type)
-    % https://people.sc.fsu.edu/~jburkardt/datasets/quadrature_rules_tri/quadrature_rules_tri.html
-    %*****************************************************************************80
-    %
-    %% Triangle quadrature for order 2
-    
-    xa = [2/3, 1/6, 1/6];
-    ya = [1/6, 2/3, 1/6];
-    wt = [1/3 1/3 1/3];
-    
-    if nargin > 0 && strcmp(type,'GPU') == 1
-    xa = gpuArray(xa);
-    ya = gpuArray(ya);
-    wt = gpuArray(wt);
-end
+    temp = mesh.node(idx,:).';
+    temp = reshape(temp,3,4,[]);
+    B = temp(:,2:end,:) - temp(:,1,:);
+    B = pagetranspose(B);
+    B = pagemldivide(B,eye(size(B,1)));
+    % Compute forward matrix COO list
+    [r,c,k,m] = getMatrix_CUDA(sort(mesh.elem,2),mesh.vol,sort(mesh.face,2),...
+        mesh.area,B,mesh.mua,mesh.kappa,mesh.R);
+    % Accumulate to MATLAB sparse
+    K = sparse(r,c,k,size(mesh.node,1),size(mesh.node,1));
+    M = sparse(r(1:length(m)),c(1:length(m)),m,size(mesh.node,1),size(mesh.node,1));
 
 end
 
 % Solve fluence for given source
 function phi = fluGPU(mesh,Q)
-    % generate full forward matrices and move matrices to GPU
-    Q = gpuArray(Q);
-    A = mesh.K + 1j.*mesh.optode.df./mesh.c.*mesh.M;
-    A = gpuArray(A + triu(A,1).'); % full fwd matrix
-    phi = gather(gpuBicstab_FSAIP(mesh,A,Q,1e-12,1e3)); % solves for phiA = nodes x freq x source
+    % % generate forward matrices
+    [K,M] = gen_fwdmat(mesh);
+    % generate full forward matrices
+    A = K + 1j.*mesh.optode.df./mesh.c.*M;
+    A = A + triu(A,1).'; % full fwd matrix
+    phi = gpuBicstab_FSAIP(mesh,A,Q,1e-12,1e3); % solves for phiA = nodes x freq x source
 end
 
 % BiCGStab with FSAI precon to solve diffusion approx.
-function x = gpuBicstab_FSAIP(mesh,A,Q,tol,iter)
+function x_out = gpuBicstab_FSAIP(mesh,A,Q,tol,iter)
 %GPUBICSTAB uses GPU parallelised bicgstab algo to solve linear system
 % assumes Q input is nodes x freqs x sources
 
 %% Initialisation
 
-% generate FSAI preconditioner
+% generate FSAI preconditioner and CSR of forward matrix
 [cPtrG,rPtrG,G] = FSAIP_gen(mesh,A);
+[cPtrA,rPtrA,A] = sparse_csr(A);
 rGfull = int32(repelem((1:(size(rPtrG,1)-1)).',diff(rPtrG)));
 [cPtrGT,rPtrGT,GT] = sparse_csr(cPtrG+1,rGfull,G);
-
-Q = gpuArray(permute(Q,[1 3 2])); % nodes x sources x freqs
-freqs = size(Q,3);
-f = gpuArray(0:freqs-1); % Fourier series frequency integers
-
-% represent sparse matrices in CSR format
-[cPtrA,rPtrA,A] = sparse_csr(A);
-
-% move to GPU
-cPtrG = gpuArray(cPtrG);
-rPtrG = gpuArray(rPtrG);
-G = gpuArray(G);
-cPtrGT = gpuArray(cPtrGT);
-rPtrGT = gpuArray(rPtrGT);
-GT = gpuArray(GT);
-cPtrA = gpuArray(cPtrA);
-rPtrA = gpuArray(rPtrA);
-A = gpuArray(A);
-tol = gpuArray(tol);
-
 clearvars rGfull
 
-%% Bicgstab
+% reshape and get some initial params
+len = size(Q,2);
+f = (1:len)-1;
+Q = complex(permute(Q,[1 3 2])); % [node,source,freq]
 
-% bicgstab initialisation
-% compute intial guess
-x = gpuArray(complex(zeros(size(Q))));
-r = smv_mex(x,f,A,rPtrA,cPtrA);
-r = Q - r;
-err0 = sqrt((sum(abs(r).^2,1)));
+% estimate memory needed
+if isa(Q,"double")
+            datawidth = 8;
+elseif isa(Q,'single')
+    datawidth = 4;
+else
+    error('Source must be double or single precision floating point')
+end
+% memory of source vectors
+vram_needed = numel(Q)*datawidth;
+% memory from all other intermediate vectors from bicgstab
+vram_needed = vram_needed + 12.*vram_needed;
+% memory usage of matrices
+vram_needed = vram_needed + 2.*numel(G)*datawidth + numel(rPtrG)*4 + numel(cPtrG)*4 +...
+     numel(rPtrGT)*4 + numel(cPtrGT)*4 + numel(A)*datawidth + numel(cPtrA)*4 + numel(rPtrA)*4;
+vram_needed = vram_needed*2.8;
+% due to overheads (MATLAB, drivers, CUDA runtime) we just scale total
+% memory a bit as reported avaliable memory is not correct
+[~,vram_free] = checkMem_CUDA;
+vram_free = vram_free.*0.8;
 
-rhat0 = r;
-rho0 = sum(rhat0.*r,1);
-p = r;
+% batch data depending on memory requirements
+n_batch = ceil(vram_needed/vram_free);
 
-% main loop
-for i = 1:iter
-
-    h = FSAImv_mex(p,G,rPtrG,cPtrG);
-    h = FSAImv_mex(h,GT,rPtrGT,cPtrGT);
-    wait(gpuDevice);
-
-    
-
-    v = smv_mex(h,f,A,rPtrA,cPtrA);
-    wait(gpuDevice);
-
-    alph = sum(v.*rhat0,1)./rho0;
-    h = x + h./alph;
-    s = r - v./alph;
-    err = sqrt(sum(abs(s).^2,1))./err0;
-    err = max(err,[],'all');
-
-    if err < tol
-        x = h;
-        break  
+if n_batch > 1
+    x_out = zeros(size(Q));
+    % batch along largest dimension
+    n_f = size(Q,3);
+    n_s = size(Q,2);
+    if n_s > n_f
+        n_batch_dim = [min(n_batch,n_s) 1];
+    else
+        n_batch_dim = [1 min(n_batch,n_f)];
     end
-    
-    Gs = FSAImv_mex(s,G,rPtrG,cPtrG);
-    z = FSAImv_mex(Gs,GT,rPtrGT,cPtrGT);
-    wait(gpuDevice);
-
-    t = smv_mex(z,f,A,rPtrA,cPtrA);
-    wait(gpuDevice);
-
-    Gtt = FSAImv_mex(t,G,rPtrG,cPtrG);
-    wait(gpuDevice);
-
-    om = sum(Gtt.*Gs,1)./sum(Gtt.*Gtt,1);
-
-    x = h + om.*z;
-    r = s - om.*t;
-    p = p - om.*v;
-    err = sqrt((sum(abs(r).^2,1)))./err0;
-    err = max(err,[],'all');
-
-    if err < tol
-        break  
+    % check batching
+    total_batch = prod(n_batch_dim);
+    if total_batch < n_batch
+        [~,id] = min(n_batch_dim);
+        n_batch_dim(id) = ceil(n_batch/total_batch);
     end
 
-    rho = sum(rhat0.*r,1);
-    beta = rho./rho0.*(1./(alph.*om));
-    rho0 = rho;
-    p = r + beta.*p;
+    % check for uneven splits. this can cause data to be cached in
+    % standard memory, slowing down GPU solver
+    flag = mod([n_s n_f],n_batch_dim) > 0;
+
+    if all(flag) % add extra split to smallest dimension in this case
+        [~,id] = min([n_s n_f]);
+        n_batch_dim(id) = n_batch_dim(id) + 1;
+    else
+        n_batch_dim(~flag) = n_batch_dim(~flag) + 1;
+    end
+
+
+    if n_batch_dim(1) > n_s || n_batch_dim(2) > n_f
+        warning('Likely not enough memory to solve, solver may be significantly slowed or not execute')
+    end
     
+    % index of batches
+    s_split = floor(linspace(1,n_s,n_batch_dim(1)+1));
+    f_split = floor(linspace(1,n_f,n_batch_dim(2)+1));
+    
+    for i_f = 1:length(f_split)-1
+        if i_f == 1
+            f_idx = f_split(i_f):f_split(i_f+1);
+        else
+            f_idx = f_split(i_f)+1:f_split(i_f+1);
+        end
+
+        f_temp = f(f_idx);
+        G_temp = complex(G(:,f_idx));
+        GT_temp = complex(GT(:,f_idx));
+
+        for i_s = 1:length(s_split)-1
+            if i_s == 1
+                s_idx = s_split(i_s):s_split(i_s+1);
+            else
+                s_idx = s_split(i_s)+1:s_split(i_s+1);
+            end
+
+            Q_temp = complex(Q(:,s_idx,f_idx));
+            % send batched problem to GPU
+            x_temp = solveField_CUDA(Q_temp,f_temp,rPtrA,cPtrA,A,rPtrG,cPtrG,G_temp,rPtrGT,cPtrGT,GT_temp,tol,int32(iter));
+            x_out(:,s_idx,f_idx) = x_temp;
+        end
+    end
+    
+else
+    % solve all in one
+    x_out = solveField_CUDA(Q,f,rPtrA,cPtrA,A,rPtrG,cPtrG,G,rPtrGT,cPtrGT,GT,tol,int32(iter));
 end
 
-clearvars -except x
-x = gather(permute(x,[1 3 2])); % nodes x freqs x sources
-reset(gpuDevice);
+x_out = permute(x_out,[1 3 2]);
+
 
 end
-    
+
 % Generates FSAI precon for solving system of equations
 function [cPtrG,rPtrG,valG] = FSAIP_gen(mesh,A)
     %FSAIP_GEN Generates FSAIP preconditioners for forward matrix in CSR format
@@ -1495,19 +1535,19 @@ function [cPtrG,rPtrG,valG] = FSAIP_gen(mesh,A)
     %% Find Sparsity Pattern of preconditioner
     
     % fwd matrix lower diagonal
-    A = gather(tril(A));
+    A = tril(A);
     
-    N = 30;
+    N = 30; % do not change unless FSAIP_gen_CUDA.cu is changed accordingly
     
     [i,j,v] = find(A);
-    % find 3 max abs vals in each row
-    spPattern = cat(2,i,abs(v));
-    [spPattern,idx] = sortrows(spPattern,'descend');
-    idxMax = diff([spPattern(end,1)+1; spPattern(:,1)]);
+    % find 30 (N) max abs vals in each column
+    spPattern = cat(2,j,abs(v));
+    [spPattern,idx] = sortrows(spPattern,[1 2],'ascend');
+    idxMax = diff([spPattern(:,1); spPattern(end,1)+1]);
     idxMax = find(idxMax);
     idxMax = unique(repmat(idxMax,N,1) - kron((0:N-1).',ones(size(idxMax))));
     idxMax = idxMax(idxMax>0);
-    idxMax = idx(idxMax); % index of 3 largest abs val in each row
+    idxMax = idx(idxMax); % index of largest abs vals in each row
     spPattern = [i(idxMax),j(idxMax)];
     spPattern = sortrows(spPattern);
     
@@ -1518,7 +1558,7 @@ function [cPtrG,rPtrG,valG] = FSAIP_gen(mesh,A)
     
     %% Find FSAI for each frequency
     
-    valG = FSAIP_gen_mex(valA,rPtrA,cPtrA,rPtrG,cPtrG,int32(length(mesh.optode.fAxis))).';
+    valG = FSAIP_gen_CUDA(valA,rPtrA,cPtrA,rPtrG,cPtrG,int32(length(mesh.optode.fAxis))).';
 end
 
 % Converts MATLAB sparse to CSR

@@ -124,7 +124,7 @@ if (isstruct(opt) && isfield(opt, 'reratio'))
     setquality = 1;
 end
 if (isstruct(opt) && isfield(opt, 'maxvol'))
-    moreopt = [moreopt sprintf(' -a %.10f ', opt.maxvol)];
+    moreopt = [moreopt sprintf(' -a%.10f ', opt.maxvol)];
 end
 
 externalpt = [];
@@ -148,13 +148,13 @@ if (~isempty(sizefield))
         fprintf(fid, '%d 1\n', size(sizefield, 1));
         fprintf(fid, '%.16f\n', sizefield);
         fclose(fid);
-        moreopt = [moreopt ' -qa '];
+        moreopt = [moreopt ' -qma '];
     else
         fid = fopen(mwpath('pre_refine.1.vol'), 'wt');
         fprintf(fid, '%d\n', size(sizefield, 1));
         fprintf(fid, '%d\t%.16f\n', [(1:size(sizefield, 1))' sizefield]');
         fclose(fid);
-        moreopt = [moreopt ' -qa '];
+        moreopt = [moreopt ' -qra '];
     end
 end
 
