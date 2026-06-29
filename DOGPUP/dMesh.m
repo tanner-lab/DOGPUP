@@ -37,6 +37,14 @@ classdef dMesh < matlab.mixin.Copyable
         cVac = 2.99792458e11; % speed of light in vaccum mms^-1
     end
     
+    % Proper copy method for optode handle
+    methods(Access = protected)
+      function cpy = copyElement(obj)
+         cpy = copyElement@matlab.mixin.Copyable(obj);
+         cpy.optode = copy(obj.optode);
+      end
+    end
+    
     methods 
         %% Mesh Setup/Utils
         % Construct an instance of this class
